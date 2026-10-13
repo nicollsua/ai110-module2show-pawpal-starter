@@ -1,15 +1,76 @@
 classDiagram
-    %% Replace the placeholders below with your actual classes, attributes, methods, and relationships.
-    %% Keep this file updated so it matches your final implementation.
+    %% PawPal+ — pet care planning assistant
+    %% Owner sets the time window; tasks belong to pets; Schedule plans the day.
 
-    class ClassName {
-        +type attribute
-        +method() returnType
+    class Priority {
+        <<enumeration>>
+        HIGH
+        MEDIUM
+        LOW
+        +rank() int
     }
 
-    class AnotherClass {
-        +type attribute
-        +method() returnType
+    class Frequency {
+        <<enumeration>>
+        DAILY
+        WEEKLY
+        ONCE
     }
 
-    ClassName --> AnotherClass : relationship
+    class Owner {
+        +str name
+        +time day_start
+        +time day_end
+        +list~Pet~ pets
+        +add_pet(pet Pet) None
+        +available_minutes() int
+        +all_tasks() list~Task~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +list~Task~ tasks
+        +add_task(task Task) None
+        +label() str
+    }
+
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +Frequency frequency
+        +int weekday
+        +time fixed_time
+        +Pet pet
+        +is_pinned() bool
+        +is_due_on(day date) bool
+    }
+
+    class ScheduledTask {
+        +Task task
+        +time start_time
+        +time end_time
+        +str reason
+        +describe() str
+    }
+
+    class Schedule {
+        +Owner owner
+        +date day
+        +list~ScheduledTask~ scheduled
+        +list~tuple~ skipped
+        +generate() None
+        +explain() str
+        +total_minutes() int
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : has
+    Task --> Priority : uses
+    Task --> Frequency : uses
+    Schedule "1" --> "1" Owner : plans for
+    Schedule "1" --> "*" ScheduledTask : contains
+    ScheduledTask "1" --> "1" Task : wraps
