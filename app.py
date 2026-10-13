@@ -103,7 +103,7 @@ def add_pet(
 
 
 def add_task(
-    pet: Pet,
+    pet: Pet | None,
     title: str,
     duration_minutes: int,
     priority: Priority,
@@ -116,8 +116,14 @@ def add_task(
 
     Fields that do not apply to the chosen frequency are cleared, so a task
     switched from weekly to daily does not keep a stale weekday hanging off
-    it. Returns None for a blank title or a non-positive duration.
+    it.
+
+    Returns None for a missing pet, a blank title, or a non-positive
+    duration, so the caller can show an error rather than crash.
     """
+    if pet is None:
+        return None
+
     cleaned = title.strip()
     if not cleaned or int(duration_minutes) <= 0:
         return None
@@ -186,9 +192,7 @@ def task_rows(owner: Owner) -> list[dict]:
             "Minutes": task.duration_minutes,
             "Priority": task.priority.value,
             "Repeats": describe_frequency(task),
-            "When": (
-                f"{task.fixed_time:%H:%M}" if task.is_pinned() else "flexible"
-            ),
+            "When": describe_time(task),
             "Done": "yes" if task.completed else "no",
         }
         for task in Scheduler(owner).all_tasks()
@@ -232,6 +236,23 @@ def visible_tasks(
             tasks, key=lambda t: (t.pet.name if t.pet else "", t.title)
         )
     return scheduler.sort_by_time(tasks)
+
+
+def describe_time(task: Task) -> str:
+    """Return a task's pinned time, or "flexible" if it has none."""
+    return f"{task.fixed_time:%H:%M}" if task.is_pinned() else "flexible"
+
+
+def describe_task(task: Task) -> str:
+    """Return one Markdown line summarising a task for the list view."""
+    parts = [
+        task.pet.name if task.pet else "?",
+        f"{task.duration_minutes} min",
+        task.priority.value,
+        describe_frequency(task),
+        describe_time(task),
+    ]
+    return f"**{task.title}** &nbsp; " + " &nbsp;·&nbsp; ".join(parts)
 
 
 def describe_frequency(task: Task) -> str:
@@ -306,6 +327,58 @@ def render_add_pet(owner: Owner) -> None:
         st.info("No pets yet. Add one above to get started.")
 
 
+def draw_task_fields(owner: Owner) -> dict:
+    """Draw the task form's inputs and return what the user entered.
+
+    Separated from render_add_task() so that function is about what happens
+    on submit, rather than two dozen lines of widget setup.
+    """
+    col1, col2 = st.columns(2)
+    with col1:
+        pet_label = st.selectbox("For which pet", pet_labels(owner),
+                                 key="task_pet")
+        title = st.text_input("Task", placeholder="Morning walk",
+                              key="task_title")
+        duration = st.number_input(
+            "Duration (minutes)", min_value=1, max_value=480, value=20,
+            key="task_duration",
+        )
+    with col2:
+        priority = st.selectbox(
+            "Priority", [p.value for p in Priority], index=1,
+            key="task_priority",
+        )
+        frequency = st.selectbox(
+            "Repeats", [f.value for f in Frequency], index=0,
+            key="task_frequency",
+        )
+        weekday_name = st.selectbox("On which day (weekly only)",
+                                    WEEKDAY_NAMES, key="task_weekday")
+        once_date = st.date_input("On which date (once only)",
+                                  value=date.today(), key="task_date")
+
+    # Both stay enabled. Widgets inside a form do not trigger a rerun until
+    # the form is submitted, so disabling the time picker based on the
+    # checkbox would read last run's value -- the box would stay grey right
+    # after ticking it, and the time could never be set. The time is simply
+    # ignored unless the box is ticked.
+    pinned = st.checkbox("This has to happen at a specific time",
+                         key="task_pinned")
+    fixed_time = st.time_input("At (used only if ticked)",
+                               value=time(8, 0), key="task_time")
+
+    return {
+        "pet": find_pet(owner, pet_label),
+        "title": title,
+        "duration_minutes": duration,
+        "priority": Priority(priority),
+        "frequency": Frequency(frequency),
+        "weekday": WEEKDAY_NAMES.index(weekday_name),
+        "due_date": once_date,
+        "fixed_time": fixed_time if pinned else None,
+    }
+
+
 def render_add_task(owner: Owner) -> None:
     """Draw the add-a-task form and wire it to Pet.add_task()."""
     st.subheader("Tasks")
@@ -315,53 +388,10 @@ def render_add_task(owner: Owner) -> None:
         return
 
     with st.form("add_task", clear_on_submit=True):
-        col1, col2 = st.columns(2)
-        with col1:
-            pet_label = st.selectbox("For which pet", pet_labels(owner),
-                                     key="task_pet")
-            title = st.text_input("Task", placeholder="Morning walk",
-                                  key="task_title")
-            duration = st.number_input(
-                "Duration (minutes)", min_value=1, max_value=480, value=20,
-                key="task_duration",
-            )
-        with col2:
-            priority = st.selectbox(
-                "Priority", [p.value for p in Priority], index=1,
-                key="task_priority",
-            )
-            frequency = st.selectbox(
-                "Repeats", [f.value for f in Frequency], index=0,
-                key="task_frequency",
-            )
-            weekday_name = st.selectbox("On which day (weekly only)",
-                                        WEEKDAY_NAMES, key="task_weekday")
-            once_date = st.date_input("On which date (once only)",
-                                      value=date.today(), key="task_date")
-
-        # Both stay enabled. Widgets inside a form do not trigger a rerun
-        # until the form is submitted, so disabling the time picker based on
-        # the checkbox would read last run's value -- the box would stay grey
-        # right after ticking it, and the time could never be set. The time is
-        # simply ignored unless the box is ticked.
-        pinned = st.checkbox("This has to happen at a specific time",
-                             key="task_pinned")
-        fixed_time = st.time_input("At (used only if ticked)",
-                                   value=time(8, 0), key="task_time")
+        entered = draw_task_fields(owner)
 
         if st.form_submit_button("Add task", width="stretch"):
-            pet = find_pet(owner, pet_label)
-            task = add_task(
-                pet,
-                title,
-                duration,
-                Priority(priority),
-                Frequency(frequency),
-                weekday=WEEKDAY_NAMES.index(weekday_name),
-                due_date=once_date,
-                fixed_time=fixed_time if pinned else None,
-            )
-            if task is None:
+            if add_task(**entered) is None:
                 st.error("Give the task a title and a duration of at least 1.")
             else:
                 st.rerun()
@@ -401,14 +431,7 @@ def render_task_list(owner: Owner, day: date) -> None:
     for index, task in enumerate(tasks):
         row, action = st.columns([5, 1])
         with row:
-            st.markdown(
-                f"**{task.title}** &nbsp; {task.pet.name if task.pet else '?'}"
-                f" &nbsp;·&nbsp; {task.duration_minutes} min"
-                f" &nbsp;·&nbsp; {task.priority.value}"
-                f" &nbsp;·&nbsp; {describe_frequency(task)}"
-                f" &nbsp;·&nbsp; "
-                f"{f'{task.fixed_time:%H:%M}' if task.is_pinned() else 'flexible'}"
-            )
+            st.markdown(describe_task(task))
         with action:
             if task.completed:
                 st.caption("done")

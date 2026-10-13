@@ -148,7 +148,7 @@ If I did it again I'd split differently than the instructions suggest — not on
 - What behaviors did you test?
 - Why were these tests important?
 
-I ended up with 399 tests across four files. The three behaviors I focused on hardest were sorting, recurrence, and conflict detection, because those are the three places where being wrong is *quiet* — the app still runs, it just tells you the wrong thing.
+I ended up with 437 tests across four files. The three behaviors I focused on hardest were sorting, recurrence, and conflict detection, because those are the three places where being wrong is *quiet* — the app still runs, it just tells you the wrong thing.
 
 **Sorting.** The tests I care about most here aren't the obvious ones. Midnight was the big one: `time(0, 0)` is falsy in Python, so writing `if task.fixed_time:` would treat a midnight task as having no time at all and shove it to the bottom of the list. Same trap with `weekday=0` for Monday. Both of those would look fine in testing unless you specifically picked those values, so I did.
 

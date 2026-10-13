@@ -18,6 +18,8 @@ from app import (
     add_pet,
     add_task,
     describe_frequency,
+    describe_task,
+    describe_time,
     ensure_owner,
     find_pet,
     pet_labels,
@@ -257,6 +259,12 @@ class TestAddTask:
         add_task(owner.pets[0], "Walk", 30, Priority.HIGH)
         assert len(Scheduler(owner).tasks_due_on(MONDAY)) == 1
 
+    def test_a_missing_pet_is_rejected_rather_than_crashing(self):
+        # find_pet() returns None for an unknown label, and that result is
+        # passed straight through. Returning None lets the UI show an error
+        # instead of raising AttributeError on None.
+        assert add_task(None, "Walk", 30, Priority.HIGH) is None
+
 
 # --- pet_labels / find_pet --------------------------------------------------
 
@@ -290,6 +298,41 @@ class TestPetLookup:
 
 
 # --- describe_frequency -----------------------------------------------------
+
+
+class TestDescribeTime:
+    def test_a_pinned_task_shows_its_time(self):
+        task = Task("Meds", 10, fixed_time=time(9, 5))
+        assert describe_time(task) == "09:05"
+
+    def test_an_unpinned_task_says_flexible(self):
+        assert describe_time(Task("Walk", 30)) == "flexible"
+
+    def test_midnight_shows_a_time_not_flexible(self):
+        # time(0, 0) is falsy; a truthiness check would call this flexible.
+        task = Task("Meds", 10, fixed_time=time(0, 0))
+        assert describe_time(task) == "00:00"
+
+
+class TestDescribeTask:
+    def test_includes_every_detail(self):
+        pet = Pet("Mochi", "cat")
+        task = Task("Walk", 30, Priority.HIGH)
+        pet.add_task(task)
+        line = describe_task(task)
+        for expected in ["Walk", "Mochi", "30 min", "high", "daily",
+                         "flexible"]:
+            assert expected in line
+
+    def test_survives_a_task_with_no_pet(self):
+        assert "?" in describe_task(Task("Walk", 30))
+
+    def test_shows_a_pinned_time(self):
+        task = Task("Meds", 10, fixed_time=time(8, 0))
+        assert "08:00" in describe_task(task)
+
+    def test_the_title_is_bold(self):
+        assert describe_task(Task("Walk", 30)).startswith("**Walk**")
 
 
 class TestDescribeFrequency:
@@ -377,7 +420,8 @@ class TestSkippedRows:
         o = Owner("Jordan", day_start=time(8, 0), day_end=time(8, 30))
         pet = add_pet(o, "Mochi", "cat")
         add_task(pet, "Grooming", 45, Priority.LOW)
-        assert "45" in skipped_rows(Scheduler(o).plan_for(MONDAY))[0]["Why not"]
+        row = skipped_rows(Scheduler(o).plan_for(MONDAY))[0]
+        assert "45" in row["Why not"]
 
 
 class TestTaskRows:

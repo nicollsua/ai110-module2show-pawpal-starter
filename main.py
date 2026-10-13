@@ -47,7 +47,9 @@ def build_owner() -> Owner:
         Task("Vet checkup", 60, Priority.HIGH,
              frequency=Frequency.ONCE, due_date=TODAY)
     )
-    cat.add_task(Task("Insulin shot", 5, Priority.HIGH, fixed_time=time(7, 30)))
+    cat.add_task(
+        Task("Insulin shot", 5, Priority.HIGH, fixed_time=time(7, 30))
+    )
     dog.add_task(Task("Morning walk", 30, Priority.HIGH))
     dog.add_task(
         Task("Brush coat", 20, Priority.LOW,

@@ -330,7 +330,8 @@ class TestScheduledTaskDescribe:
         pet = Pet("Mochi", "cat")
         task = Task("Walk", 30)
         pet.add_task(task)
-        assert "Mochi" in ScheduledTask(task, time(8, 0), time(8, 30)).describe()
+        item = ScheduledTask(task, time(8, 0), time(8, 30))
+        assert "Mochi" in item.describe()
 
     def test_survives_a_task_with_no_pet(self):
         # Tasks built directly in tests never go through Pet.add_task(), so
@@ -454,13 +455,31 @@ class TestGeneratePinned:
         ])
         schedule = plan(owner)
         assert skipped_titles(schedule) == ["Early"]
-        assert "fit" in reason_for(schedule, "Early").lower()
+
+    def test_the_reason_says_it_is_before_the_day_starts(self):
+        # Distinct from overrunning the end: telling the owner which edge
+        # they fell off is the difference between a useful message and a
+        # vague one.
+        owner = make_owner(start=time(9, 0), tasks=[
+            Task("Early", 10, fixed_time=time(7, 0)),
+        ])
+        reason = reason_for(plan(owner), "Early").lower()
+        assert "before" in reason
+        assert "07:00" in reason
 
     def test_pinned_running_past_the_day_end_is_skipped(self):
         owner = make_owner(end=time(17, 0), tasks=[
             Task("Overrun", 60, fixed_time=time(16, 30)),
         ])
         assert skipped_titles(plan(owner)) == ["Overrun"]
+
+    def test_the_reason_says_it_does_not_fit_in_the_day(self):
+        owner = make_owner(end=time(17, 0), tasks=[
+            Task("Overrun", 60, fixed_time=time(16, 30)),
+        ])
+        reason = reason_for(plan(owner), "Overrun").lower()
+        assert "does not fit" in reason
+        assert "16:30" in reason
 
     def test_pinned_ending_exactly_at_day_end_fits(self):
         owner = make_owner(end=time(17, 0), tasks=[
@@ -495,7 +514,9 @@ class TestGenerateGaps:
             Task("Filler", 30, Priority.HIGH),
         ])
         schedule = plan(owner)
-        filler = next(i for i in schedule.scheduled if i.task.title == "Filler")
+        filler = next(
+            i for i in schedule.scheduled if i.task.title == "Filler"
+        )
         assert filler.start_time == time(8, 30)
 
     def test_flexible_task_uses_the_earliest_gap_that_fits(self):
@@ -760,7 +781,8 @@ class TestScheduler:
         done, todo = Task("Done", 30), Task("Todo", 30)
         done.mark_complete()
         owner = make_owner(tasks=[done, todo])
-        assert [t.title for t in Scheduler(owner).completed_tasks()] == ["Done"]
+        done_titles = [t.title for t in Scheduler(owner).completed_tasks()]
+        assert done_titles == ["Done"]
 
     def test_pending_and_completed_partition_everything(self):
         done, todo = Task("Done", 30), Task("Todo", 30)
@@ -966,8 +988,10 @@ class TestFiltering:
         cat.add_task(Task("Litter", 10))
         dog.add_task(Task("Walk", 30))
         scheduler = Scheduler(owner)
-        assert [t.title for t in scheduler.filter_by_pet("Mochi")] == ["Litter"]
-        assert [t.title for t in scheduler.filter_by_pet("Biscuit")] == ["Walk"]
+        cat_tasks = [t.title for t in scheduler.filter_by_pet("Mochi")]
+        dog_tasks = [t.title for t in scheduler.filter_by_pet("Biscuit")]
+        assert cat_tasks == ["Litter"]
+        assert dog_tasks == ["Walk"]
 
     def test_filter_by_pet_ignores_case(self):
         owner = make_owner(tasks=[Task("Litter", 10)])

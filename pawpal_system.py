@@ -127,7 +127,7 @@ class Task:
         self.completed = True
 
     def mark_incomplete(self) -> None:
-        """Undo mark_complete, for when something gets ticked off by mistake."""
+        """Undo mark_complete, for a task ticked off by mistake."""
         self.completed = False
 
     def next_occurrence_date(self, completed_on: date) -> date | None:
@@ -274,6 +274,54 @@ class SkippedTask:
 
 
 @dataclass
+class _Block:
+    """A stretch of the day already taken by a pinned task.
+
+    Start and end are minutes past midnight, because that is the only form
+    the arithmetic works in. Internal to Schedule.generate().
+    """
+
+    start: int
+    end: int
+    task: Task
+
+    def overlaps(self, start: int, end: int) -> bool:
+        """Return True if this block shares any minute with start..end.
+
+        Touching exactly does not count: a block ending at 10:00 and a task
+        starting at 10:00 are back to back, not in conflict.
+        """
+        return start < self.end and self.start < end
+
+
+@dataclass
+class _Gap:
+    """A stretch of free time left between pinned tasks.
+
+    Mutable on purpose: filling a gap shrinks it from the front, so the next
+    task sees what is actually left. Internal to Schedule.generate().
+    """
+
+    start: int
+    end: int
+
+    @property
+    def length(self) -> int:
+        """Return how many minutes long this gap is."""
+        return self.end - self.start
+
+    def fits(self, minutes: int) -> bool:
+        """Return True if a task of this length would fit here."""
+        return self.length >= minutes
+
+    def take(self, minutes: int) -> int:
+        """Claim the front of this gap and return the minute it starts at."""
+        start = self.start
+        self.start += minutes
+        return start
+
+
+@dataclass
 class Schedule:
     """The plan for one day, and the logic that builds it.
 
@@ -289,6 +337,10 @@ class Schedule:
     def generate(self) -> None:
         """Build the plan, filling in self.scheduled and self.skipped.
 
+        Four steps: work out what is due, put the pinned tasks at their fixed
+        times, see what gaps that leaves, and fill those gaps with everything
+        else. Each step has its own method below.
+
         Pinned tasks are placed before flexible ones even when a flexible task
         is more important. That is deliberate: medication at 8am is not
         negotiable, and a plan that quietly moves it is worse than useless.
@@ -298,59 +350,56 @@ class Schedule:
         self.scheduled = []
         self.skipped = []
 
-        day_start = to_minutes(self.owner.day_start)
-        day_end = to_minutes(self.owner.day_end)
-        window = (
-            f"{self.owner.day_start:%H:%M}-{self.owner.day_end:%H:%M}"
-        )
-
         # Ask the Scheduler rather than reaching into pet.tasks directly, so
         # "which tasks count today" is decided in exactly one place.
-        due = Scheduler(self.owner).tasks_due_on(self.day)
+        pinned, flexible = self._split(
+            Scheduler(self.owner).tasks_due_on(self.day)
+        )
 
+        placed, blocks = self._place_pinned(pinned)
+        placed += self._fill_gaps(flexible, self._free_gaps(blocks))
+
+        placed.sort(key=lambda s: (s.start_time, s.task.title))
+        self.scheduled = placed
+
+    def _split(self, due: list[Task]) -> tuple[list[Task], list[Task]]:
+        """Separate today's tasks into pinned and flexible, each in order.
+
+        Pinned go in clock order, since they are placed as they come.
+        Flexible go most urgent first, then shortest first on a tie, which
+        fits more tasks into the day overall. Title breaks any remaining tie
+        so the plan is stable rather than depending on insertion order.
+        """
         pinned = sorted(
             (t for t in due if t.is_pinned()),
             key=lambda t: (to_minutes(t.fixed_time), t.title),
         )
-        flexible = [t for t in due if not t.is_pinned()]
+        flexible = sorted(
+            (t for t in due if not t.is_pinned()),
+            key=lambda t: (-t.priority.rank(), t.duration_minutes, t.title),
+        )
+        return pinned, flexible
 
+    def _place_pinned(
+        self, pinned: list[Task]
+    ) -> tuple[list[ScheduledTask], list[_Block]]:
+        """Put each pinned task at its fixed time, or skip it with a reason.
+
+        Returns what was placed, and the blocks of the day they now occupy.
+        """
         placed: list[ScheduledTask] = []
-        occupied: list[tuple[int, int, Task]] = []
+        blocks: list[_Block] = []
 
         for task in pinned:
-            if task.duration_minutes <= 0:
-                self.skipped.append(
-                    SkippedTask(task, "duration must be at least 1 minute")
-                )
-                continue
-
             start = to_minutes(task.fixed_time)
             end = start + task.duration_minutes
 
-            if start < day_start or end > day_end:
-                self.skipped.append(
-                    SkippedTask(
-                        task,
-                        f"fixed time {task.fixed_time:%H:%M} does not fit "
-                        f"inside your {window} day",
-                    )
-                )
+            refusal = self._why_pinned_cannot_fit(task, start, end, blocks)
+            if refusal is not None:
+                self.skipped.append(SkippedTask(task, refusal))
                 continue
 
-            clash = next(
-                (o for o in occupied if start < o[1] and o[0] < end), None
-            )
-            if clash is not None:
-                self.skipped.append(
-                    SkippedTask(
-                        task,
-                        f"fixed time {task.fixed_time:%H:%M} overlaps "
-                        f"{clash[2].title}",
-                    )
-                )
-                continue
-
-            occupied.append((start, end, task))
+            blocks.append(_Block(start, end, task))
             placed.append(
                 ScheduledTask(
                     task,
@@ -360,22 +409,69 @@ class Schedule:
                 )
             )
 
-        # Whatever the pinned tasks left behind, inside the owner's window.
-        gaps: list[list[int]] = []
-        cursor = day_start
-        for start, end, _ in sorted(occupied, key=lambda o: (o[0], o[1])):
-            if start > cursor:
-                gaps.append([cursor, start])
-            cursor = max(cursor, end)
-        if cursor < day_end:
-            gaps.append([cursor, day_end])
+        return placed, blocks
 
-        # Most urgent first; on a tie the shorter task goes first, which fits
-        # more tasks into the day overall. Title breaks remaining ties so the
-        # output is stable rather than depending on insertion order.
-        flexible.sort(
-            key=lambda t: (-t.priority.rank(), t.duration_minutes, t.title)
-        )
+    def _why_pinned_cannot_fit(
+        self, task: Task, start: int, end: int, blocks: list[_Block]
+    ) -> str | None:
+        """Return why a pinned task cannot be placed, or None if it can.
+
+        Gathering the three refusals in one place keeps _place_pinned() to
+        the shape of the thing it does, rather than burying it in checks.
+        """
+        if task.duration_minutes <= 0:
+            return "duration must be at least 1 minute"
+
+        if start < to_minutes(self.owner.day_start):
+            return (
+                f"fixed time {task.fixed_time:%H:%M} is before your "
+                f"{self._window()} day starts"
+            )
+
+        if end > to_minutes(self.owner.day_end):
+            return (
+                f"fixed time {task.fixed_time:%H:%M} does not fit inside "
+                f"your {self._window()} day"
+            )
+
+        clash = next((b for b in blocks if b.overlaps(start, end)), None)
+        if clash is not None:
+            return (
+                f"fixed time {task.fixed_time:%H:%M} overlaps "
+                f"{clash.task.title}"
+            )
+
+        return None
+
+    def _free_gaps(self, blocks: list[_Block]) -> list[_Gap]:
+        """Return the stretches of the owner's day the pinned tasks left.
+
+        Walks a cursor through the day, and every time a block starts later
+        than the cursor, the space between them is free.
+        """
+        day_end = to_minutes(self.owner.day_end)
+        gaps: list[_Gap] = []
+        cursor = to_minutes(self.owner.day_start)
+
+        for block in sorted(blocks, key=lambda b: (b.start, b.end)):
+            if block.start > cursor:
+                gaps.append(_Gap(cursor, block.start))
+            cursor = max(cursor, block.end)
+
+        if cursor < day_end:
+            gaps.append(_Gap(cursor, day_end))
+
+        return gaps
+
+    def _fill_gaps(
+        self, flexible: list[Task], gaps: list[_Gap]
+    ) -> list[ScheduledTask]:
+        """Drop each flexible task into the earliest gap large enough.
+
+        Greedy and single-pass: a task that does not fit anywhere is skipped
+        rather than triggering a rearrangement of what is already placed.
+        """
+        placed: list[ScheduledTask] = []
 
         for task in flexible:
             if task.duration_minutes <= 0:
@@ -385,10 +481,10 @@ class Schedule:
                 continue
 
             gap = next(
-                (g for g in gaps if g[1] - g[0] >= task.duration_minutes), None
+                (g for g in gaps if g.fits(task.duration_minutes)), None
             )
             if gap is None:
-                largest = max((g[1] - g[0] for g in gaps), default=0)
+                largest = max((g.length for g in gaps), default=0)
                 self.skipped.append(
                     SkippedTask(
                         task,
@@ -398,21 +494,22 @@ class Schedule:
                 )
                 continue
 
-            start = gap[0]
-            end = start + task.duration_minutes
-            gap[0] = end  # shrink the gap from the front
+            start = gap.take(task.duration_minutes)
             placed.append(
                 ScheduledTask(
                     task,
                     to_time(start),
-                    to_time(end),
+                    to_time(start + task.duration_minutes),
                     f"{task.priority.value} priority, earliest free "
                     f"{task.duration_minutes} min slot",
                 )
             )
 
-        placed.sort(key=lambda s: (s.start_time, s.task.title))
-        self.scheduled = placed
+        return placed
+
+    def _window(self) -> str:
+        """Return the owner's day as a display string, e.g. "08:00-20:00"."""
+        return f"{self.owner.day_start:%H:%M}-{self.owner.day_end:%H:%M}"
 
     def explain(self) -> str:
         """Return human-readable text explaining the plan."""

@@ -2,6 +2,21 @@
 
 You are building **PawPal+**, a Streamlit app that helps a pet owner plan care tasks for their pet.
 
+**Contents**
+
+| | |
+|---|---|
+| [Features](#-features) | What the app does |
+| [Getting started](#getting-started) | Install and run |
+| [Sample Output](#-sample-output) | What a generated plan looks like |
+| [Demo Walkthrough](#-demo-walkthrough) | The UI, an example workflow, full CLI output |
+| [Smarter Scheduling](#-smarter-scheduling) | Each algorithm and the method behind it |
+| [Testing](#-testing-pawpal) | How to run the suite and what it covers |
+
+Project files: [`pawpal_system.py`](pawpal_system.py) is the logic layer,
+[`app.py`](app.py) the Streamlit UI, [`main.py`](main.py) a terminal demo, and
+[`diagrams/uml_final.mmd`](diagrams/uml_final.mmd) the class diagram.
+
 ## Scenario
 
 A busy pet owner needs help staying consistent with pet care. They want an assistant that can:
@@ -66,10 +81,43 @@ Your final app should:
 
 ### Setup
 
+Create the virtual environment:
+
 ```bash
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+```
+
+Activate it. The command differs by shell — `source` does not exist in
+PowerShell, and a `.bat` activator launches a separate `cmd.exe` that exits
+immediately, so neither works on Windows PowerShell:
+
+```bash
+source .venv/bin/activate          # macOS / Linux
+```
+```powershell
+.\.venv\Scripts\Activate.ps1       # Windows PowerShell
+```
+
+If PowerShell refuses with *"running scripts is disabled on this system"*,
+allow it once for your own account — no administrator rights needed:
+
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+```
+
+You will know it worked when your prompt gains a `(.venv)` prefix. Then
+install the dependencies:
+
+```bash
 pip install -r requirements.txt
+```
+
+### Running it
+
+```bash
+streamlit run app.py     # the app
+python main.py           # the terminal demo
+python -m pytest         # the tests
 ```
 
 ### Suggested workflow
@@ -84,69 +132,10 @@ pip install -r requirements.txt
 
 ## 🖥️ Sample Output
 
-Terminal output from `python main.py`. One owner, two pets, eight tasks
-added deliberately out of order, and a 150-minute morning. It walks
-through sorting, filtering, conflict detection, the plan itself, and a
-daily task regenerating when it is completed.
+What a generated plan looks like. One owner, two pets, a 150-minute morning,
+and every task carrying the reason it landed where it did:
 
 ```
-==============================================================
-  PawPal+ - Today's Schedule
-==============================================================
-  Owner : Jordan
-  Pets  : Mochi (cat), Biscuit (dog)
-  Day   : Monday, October 12, 2026  (07:30-10:00, 150 min)
-
-
-==============================================================
-  SORTING - Scheduler.sort_by_time()
-==============================================================
-  As entered:
-     flexible  Vet checkup
-        07:30  Insulin shot
-     flexible  Litter box
-        08:05  Eye drops
-     flexible  Nail trim
-        08:00  Breakfast
-     flexible  Morning walk
-     flexible  Brush coat
-
-  Sorted by time (pinned first, flexible last):
-        07:30  Insulin shot
-        08:00  Breakfast
-        08:05  Eye drops
-     flexible  Brush coat
-     flexible  Litter box
-     flexible  Morning walk
-     flexible  Nail trim
-     flexible  Vet checkup
-
-==============================================================
-  FILTERING - by pet, and by status
-==============================================================
-  Mochi (cat)            4 task(s)
-          07:30  Insulin shot
-          08:05  Eye drops
-       flexible  Litter box
-       flexible  Vet checkup
-  Biscuit (dog)          4 task(s)
-          08:00  Breakfast
-       flexible  Brush coat
-       flexible  Morning walk
-       flexible  Nail trim
-
-  Outstanding : 8
-  Completed   : 0
-
-==============================================================
-  CONFLICTS - Scheduler.find_conflicts()
-==============================================================
-  1 clash(es) found. The app keeps running:
-    ! Biscuit and Mochi overlap: Breakfast runs 08:00-08:10 but Eye drops starts 08:05
-
-==============================================================
-  THE PLAN - Scheduler.plan_for()
-==============================================================
 --------------------------------------------------------------
   TIME          TASK             PET       WHY
 --------------------------------------------------------------
@@ -164,22 +153,16 @@ daily task regenerating when it is completed.
 
   6 task(s) scheduled, 2 left out.
   Using 135 of 150 minutes (15 min spare).
-==============================================================
-
-==============================================================
-  RECURRING - completing a task queues the next one
-==============================================================
-  Added 'Evening feed' (daily).
-  Outstanding copies today: 1
-
-  Marked complete on Mon 12 Oct.
-  A repeat was created, starting Tue 13 Oct.
-
-  The completed original drops out and the repeat has not
-  started yet, so today is clear -- but tomorrow is covered:
-    outstanding today    : 0
-    outstanding tomorrow : 1
 ```
+
+Worth noticing: **Litter box (medium) is scheduled before Morning walk
+(high)**. That is not a priority bug. The walk is considered first, but needs
+30 minutes and the 07:35-08:00 gap only has 25, so it lands at 08:10. Litter
+box then backfills the small gap. Higher priority wins the *choice* of slot,
+not necessarily the earliest clock time.
+
+The full run, including sorting, filtering and recurrence, is in
+[Demo Walkthrough](#-demo-walkthrough) below.
 
 ## 🧪 Testing PawPal+
 
@@ -201,10 +184,10 @@ python -m pytest -k conflict     # only conflict tests
 
 | File | Tests | Covers |
 |------|-------|--------|
-| `test_pawpal_system.py` | 226 | The logic layer, grouped by method — every branch of sorting, filtering, conflicts, recurrence, completion and planning |
-| `test_app.py` | 77 | The Streamlit glue, grouped by helper — session state, form handling, table rows |
+| `test_pawpal_system.py` | 228 | The logic layer, grouped by method — every branch of sorting, filtering, conflicts, recurrence, completion and planning |
+| `test_app.py` | 99 | The Streamlit glue, grouped by helper — session state, form handling, table rows |
 | `tests/test_pawpal.py` | 66 | The same system grouped by *behaviour*, readable top to bottom as a description of what PawPal+ guarantees |
-| `test_ui.py` | 30 | The real app, driven through Streamlit's `AppTest` harness |
+| `test_ui.py` | 44 | The real app, driven through Streamlit's `AppTest` harness |
 
 The four areas `tests/test_pawpal.py` pins down:
 
@@ -233,17 +216,23 @@ through the UI at all.
 
 ```
 $ python -m pytest
-test_app.py ............................................................ [ 15%]
-.................                                                        [ 19%]
-test_pawpal_system.py .................................................. [ 31%]
-........................................................................ [ 49%]
+============================= test session starts =============================
+platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\deluq\Desktop\AI class Fall26\Paw_app\ai110-module2show-pawpal-starter
+plugins: anyio-4.15.1
+collected 437 items
+
+test_app.py ............................................................ [ 13%]
+.......................................                                  [ 22%]
+test_pawpal_system.py .................................................. [ 34%]
+........................................................................ [ 50%]
 ........................................................................ [ 67%]
-................................                                         [ 75%]
-test_ui.py ..............................                                [ 83%]
+..................................                                       [ 74%]
+test_ui.py ............................................                  [ 84%]
 tests\test_pawpal.py ................................................... [ 96%]
 ...............                                                          [100%]
 
-============================= 399 passed in 6.08s =============================
+============================= 437 passed in 9.53s =============================
 ```
 
 ### Confidence level
@@ -252,7 +241,7 @@ tests\test_pawpal.py ................................................... [ 96%]
 
 Four rather than five, and the missing star is deliberate.
 
-**What earns the four:** 399 tests across four layers, including the real
+**What earns the four:** 437 tests across four layers, including the real
 Streamlit app. The edge cases that actually break schedulers are covered
 explicitly, not assumed — falsy `0` values for midnight and Monday, exact
 window boundaries, leap days, and double-submission. I also sanity-checked

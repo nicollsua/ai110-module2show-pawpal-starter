@@ -14,7 +14,6 @@ so the exhaustive cases stay in test_app.py and only the journeys live here.
 
 from datetime import date, time
 
-import pytest
 from streamlit.testing.v1 import AppTest
 
 from pawpal_system import Scheduler

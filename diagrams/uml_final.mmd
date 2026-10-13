@@ -91,6 +91,23 @@ classDiagram
         +total_minutes() int
     }
 
+    class _Block {
+        <<internal>>
+        +int start
+        +int end
+        +Task task
+        +overlaps(start int, end int) bool
+    }
+
+    class _Gap {
+        <<internal>>
+        +int start
+        +int end
+        +length() int
+        +fits(minutes int) bool
+        +take(minutes int) int
+    }
+
     class Scheduler {
         +Owner owner
         +all_tasks() list~Task~
@@ -125,6 +142,10 @@ classDiagram
     Schedule "1" --> "*" SkippedTask : left out
     ScheduledTask "1" --> "1" Task : wraps with a time
     SkippedTask "1" --> "1" Task : wraps with a reason
+
+    Schedule ..> _Block : pinned tasks occupy
+    Schedule ..> _Gap : flexible tasks fill
+    _Block "1" --> "1" Task : holds
 
     Schedule ..> TimeHelpers : converts clock times
     Scheduler ..> TimeHelpers : converts clock times
