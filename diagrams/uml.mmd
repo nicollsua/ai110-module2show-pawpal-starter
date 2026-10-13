@@ -43,6 +43,7 @@ classDiagram
         +Priority priority
         +Frequency frequency
         +int weekday
+        +date due_date
         +time fixed_time
         +Pet pet
         +is_pinned() bool
@@ -57,11 +58,17 @@ classDiagram
         +describe() str
     }
 
+    class SkippedTask {
+        +Task task
+        +str reason
+        +describe() str
+    }
+
     class Schedule {
         +Owner owner
         +date day
         +list~ScheduledTask~ scheduled
-        +list~tuple~ skipped
+        +list~SkippedTask~ skipped
         +generate() None
         +explain() str
         +total_minutes() int
@@ -73,4 +80,6 @@ classDiagram
     Task --> Frequency : uses
     Schedule "1" --> "1" Owner : plans for
     Schedule "1" --> "*" ScheduledTask : contains
+    Schedule "1" --> "*" SkippedTask : contains
     ScheduledTask "1" --> "1" Task : wraps
+    SkippedTask "1" --> "1" Task : wraps

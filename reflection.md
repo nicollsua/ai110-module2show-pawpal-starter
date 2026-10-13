@@ -28,6 +28,22 @@ Yeah, three things changed once I started thinking about how the scheduler would
 
 Two smaller things: I made Priority and Frequency into enums instead of plain strings, because `"high"` vs `"HIGH"` is the kind of typo that would quietly break the sorting and not throw an error. And I renamed Pet's `type` to `breed`, since having `species` and `type` sitting next to each other didn't actually tell you which was which.
 
+### Changes after reviewing the skeleton
+
+Once I had `pawpal_system.py` written out I had AI review it for missing relationships and bottlenecks. Five things came back and I took all of them.
+
+**4. Python's `time` can't do math, which affects almost every method.** This was the one I had no idea about. `datetime.time` is a clock reading, not an amount of time, so `time(8,0) + timedelta(minutes=30)` just raises a TypeError. I checked it myself before changing anything because it sounded wrong. But `available_minutes()`, `generate()`, and `total_minutes()` are all basically time math, so this would have been a mess spread across the whole file. I added two helpers, `to_minutes()` and `to_time()`, and now everything converts to minutes past midnight, does normal integer math, and only converts back when it's time to display something.
+
+**5. `Frequency.ONCE` wasn't actually doing anything.** My plan was DAILY returns True always and ONCE returns True always, which are the same thing — so a "one time" task would have repeated every single day. The problem was that ONCE had no date on it to check against. I added `due_date` to Task, so now ONCE means "only on this specific date." This one bugged me because the gap was in my UML, not just the code, so the diagram was wrong too.
+
+**6. `generate()` would have duplicated the plan every time you ran it.** It adds to `self.scheduled` but never empties it first. This matters way more in Streamlit than I expected, because Streamlit re-runs the entire script every time you click anything. So pressing Generate twice would have given me every task listed twice and I probably would have blamed the scheduler. Step 0 of the method is now clearing both lists.
+
+**7. `describe()` would crash when a task has no pet.** `Task.pet` starts as None and only gets filled in by `Pet.add_task()`. But my tests are going to build Task objects directly without any pet, and `describe()` wants `task.pet.label()` for the display line, which would be an AttributeError on None. Now it just leaves the pet name off instead of crashing.
+
+**8. I added a `SkippedTask` class.** I had skipped tasks stored as `(task, reason)` tuples, which meant getting a reason looked like `schedule.skipped[0][1]`. That's unreadable. It's funny because I'd already solved this exact problem with `ScheduledTask` and didn't notice I was doing the opposite thing right next to it. Now it's `skipped[0].reason`.
+
+So the final count is six classes plus two enums, not the four classes I started with. Most of the growth came from the same realization over and over: a thing, and a fact *about* that thing in one specific situation, want to be two separate objects.
+
 
 ---
 
