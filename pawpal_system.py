@@ -6,9 +6,10 @@ diagrams/uml.mmd one for one.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import date, time
+from dataclasses import dataclass, field, replace
+from datetime import date, time, timedelta
 from enum import Enum
+from itertools import combinations
 
 MINUTES_PER_DAY = 24 * 60
 
@@ -102,9 +103,12 @@ class Task:
     and is None for a flexible task the scheduler can place wherever it fits.
     These are two different ideas and the scheduler treats them differently.
 
-    Two fields only matter for certain frequencies:
-      weekday  -> WEEKLY only, 0 = Monday through 6 = Sunday
-      due_date -> ONCE only, the single date this task is for
+    Three fields only matter in certain cases:
+      weekday   -> WEEKLY only, 0 = Monday through 6 = Sunday
+      due_date  -> ONCE only, the single date this task is for
+      starts_on -> set on a repeat created by next_occurrence(); the task is
+                   not due before this date, which is what stops tomorrow's
+                   copy of a daily task from also being due today
     """
 
     title: str
@@ -113,6 +117,7 @@ class Task:
     frequency: Frequency = Frequency.DAILY
     weekday: int | None = None
     due_date: date | None = None
+    starts_on: date | None = None
     fixed_time: time | None = None
     completed: bool = False
     pet: Pet | None = None
@@ -124,6 +129,41 @@ class Task:
     def mark_incomplete(self) -> None:
         """Undo mark_complete, for when something gets ticked off by mistake."""
         self.completed = False
+
+    def next_occurrence_date(self, completed_on: date) -> date | None:
+        """Return the next date this task comes round again, or None.
+
+        DAILY  -> the day after it was completed
+        WEEKLY -> the next matching weekday, always at least 7 days later so
+                  that finishing Monday's bath does not make it due again the
+                  same Monday
+        ONCE   -> None, because a one-off does not come back
+        """
+        if self.frequency is Frequency.DAILY:
+            return completed_on + timedelta(days=1)
+        if self.frequency is Frequency.WEEKLY and self.weekday is not None:
+            days_ahead = (self.weekday - completed_on.weekday()) % 7
+            return completed_on + timedelta(days=days_ahead or 7)
+        return None
+
+    def next_occurrence(self, completed_on: date) -> Task | None:
+        """Return a fresh, uncompleted copy of this task for its next date.
+
+        Returns None when there is no next time (a one-off, or a weekly task
+        with no weekday set). The copy deliberately drops the pet link: the
+        caller attaches it with Pet.add_task(), which is the only place that
+        is allowed to set both sides of that relationship.
+        """
+        next_date = self.next_occurrence_date(completed_on)
+        if next_date is None:
+            return None
+        return replace(
+            self,
+            starts_on=next_date,
+            due_date=next_date if self.frequency is Frequency.ONCE else None,
+            completed=False,
+            pet=None,
+        )
 
     def is_pinned(self) -> bool:
         """Return True if this task must happen at a specific time."""
@@ -140,7 +180,12 @@ class Task:
         no weekday, a ONCE task with no due_date) this returns False. Leaving
         a task out of one day's plan is a much smaller mistake than silently
         scheduling it on every day forever.
+
+        A task with starts_on set is never due before that date. That is what
+        keeps a repeat generated on completion from showing up again today.
         """
+        if self.starts_on is not None and day < self.starts_on:
+            return False
         if self.frequency is Frequency.DAILY:
             return True
         if self.frequency is Frequency.WEEKLY:
@@ -446,3 +491,129 @@ class Scheduler:
         schedule = Schedule(self.owner, day)
         schedule.generate()
         return schedule
+
+    # --- Sorting ------------------------------------------------------------
+
+    def sort_by_time(self, tasks: list[Task] | None = None) -> list[Task]:
+        """Return tasks ordered by their fixed time, flexible ones last.
+
+        Sorts a copy rather than in place, so the pets' own task lists keep
+        whatever order they were entered in.
+
+        The key is a tuple. Its first element is the boolean
+        `fixed_time is None`, and since False sorts before True that puts
+        every pinned task ahead of every flexible one. Its second element is
+        the time itself, which orders the pinned group. Flexible tasks all
+        share time.min for that slot, so the third element, the title, keeps
+        them in a predictable order instead of an arbitrary one.
+        """
+        return sorted(
+            self.all_tasks() if tasks is None else tasks,
+            key=lambda t: (t.fixed_time is None,
+                           t.fixed_time or time.min,
+                           t.title),
+        )
+
+    def sort_by_priority(self, tasks: list[Task] | None = None) -> list[Task]:
+        """Return tasks ordered most urgent first, then shortest first."""
+        return sorted(
+            self.all_tasks() if tasks is None else tasks,
+            key=lambda t: (-t.priority.rank(), t.duration_minutes, t.title),
+        )
+
+    # --- Filtering ----------------------------------------------------------
+
+    def filter_by_status(self, completed: bool) -> list[Task]:
+        """Return tasks that are done (True) or still outstanding (False)."""
+        return [t for t in self.all_tasks() if t.completed is completed]
+
+    def filter_by_pet(self, pet_name: str) -> list[Task]:
+        """Return tasks belonging to the pet with this name.
+
+        Matched case-insensitively on the name alone, so "mochi" works as
+        well as "Mochi". Returns an empty list for an unknown name rather
+        than raising, because this is driven by user input.
+        """
+        wanted = pet_name.strip().lower()
+        return [
+            t for t in self.all_tasks()
+            if t.pet is not None and t.pet.name.lower() == wanted
+        ]
+
+    def filter_by_priority(self, priority: Priority) -> list[Task]:
+        """Return tasks at exactly this priority level."""
+        return [t for t in self.all_tasks() if t.priority is priority]
+
+    # --- Completing, with automatic repeats ---------------------------------
+
+    def complete_task(self, task: Task, on: date) -> Task | None:
+        """Mark a task done and queue up its next occurrence.
+
+        Returns the newly created repeat, or None for a one-off task that
+        does not come back. The completed original is kept rather than
+        deleted, so the pet's list doubles as a record of what was done.
+
+        An already-completed task is left alone and returns None, so
+        clicking twice cannot stack up duplicate repeats.
+        """
+        if task.completed:
+            return None
+
+        task.mark_complete()
+        repeat = task.next_occurrence(on)
+        if repeat is not None and task.pet is not None:
+            task.pet.add_task(repeat)
+        return repeat
+
+    # --- Conflict detection -------------------------------------------------
+
+    def find_conflicts(self, day: date) -> list[str]:
+        """Return a warning per pair of pinned tasks that overlap on `day`.
+
+        Deliberately lightweight: it reports, it never raises and never
+        changes anything. The caller decides whether to show the warnings,
+        so a clash is something the owner is told about rather than
+        something that stops the app.
+
+        Only pinned tasks can conflict. A flexible task has no fixed time
+        yet, so the scheduler will simply place it somewhere free.
+        """
+        pinned = self.sort_by_time(
+            [t for t in self.tasks_due_on(day) if t.is_pinned()]
+        )
+        return [
+            f"{_who(first)} and {_who(second)} overlap: "
+            f"{first.title} runs "
+            f"{first.fixed_time:%H:%M}-{_end_of(first):%H:%M} "
+            f"but {second.title} starts {second.fixed_time:%H:%M}"
+            for first, second in combinations(pinned, 2)
+            if _overlaps(first, second)
+        ]
+
+    def has_conflicts(self, day: date) -> bool:
+        """Return True if any two pinned tasks clash on the given day."""
+        return bool(self.find_conflicts(day))
+
+
+def _end_of(task: Task) -> time:
+    """Return the clock time a pinned task finishes at."""
+    return to_time(to_minutes(task.fixed_time) + task.duration_minutes)
+
+
+def _who(task: Task) -> str:
+    """Return the pet name a task belongs to, for a warning message."""
+    return task.pet.name if task.pet is not None else "An unassigned task"
+
+
+def _overlaps(first: Task, second: Task) -> bool:
+    """Return True if two pinned tasks share any minute of the day.
+
+    Touching exactly does not count: a task ending at 10:00 and another
+    starting at 10:00 are back to back, not in conflict.
+    """
+    first_start = to_minutes(first.fixed_time)
+    second_start = to_minutes(second.fixed_time)
+    return (
+        first_start < second_start + second.duration_minutes
+        and second_start < first_start + first.duration_minutes
+    )

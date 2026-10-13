@@ -44,6 +44,7 @@ classDiagram
         +Frequency frequency
         +int weekday
         +date due_date
+        +date starts_on
         +time fixed_time
         +bool completed
         +Pet pet
@@ -51,6 +52,8 @@ classDiagram
         +mark_incomplete() None
         +is_pinned() bool
         +is_due_on(day date) bool
+        +next_occurrence_date(on date) date
+        +next_occurrence(on date) Task
     }
 
     class ScheduledTask {
@@ -85,6 +88,14 @@ classDiagram
         +tasks_due_on(day date) list~Task~
         +tasks_for_pet(pet Pet) list~Task~
         +plan_for(day date) Schedule
+        +sort_by_time(tasks list) list~Task~
+        +sort_by_priority(tasks list) list~Task~
+        +filter_by_status(completed bool) list~Task~
+        +filter_by_pet(pet_name str) list~Task~
+        +filter_by_priority(priority Priority) list~Task~
+        +complete_task(task Task, on date) Task
+        +find_conflicts(day date) list~str~
+        +has_conflicts(day date) bool
     }
 
     Owner "1" --> "*" Pet : owns

@@ -1,15 +1,16 @@
 """Terminal demo for PawPal+.
 
 Builds a small but realistic day -- one owner, two pets, a mix of pinned,
-flexible, daily, weekly and one-off tasks -- and prints the plan the scheduler
-produces. Run it with:
+flexible, daily, weekly and one-off tasks -- and exercises every piece of
+scheduling logic in turn: sorting, filtering, conflict detection, planning,
+and recurring tasks regenerating when they are completed. Run it with:
 
     python main.py
 
 This is a testing ground, not part of the app. The real UI is app.py.
 """
 
-from datetime import date, time
+from datetime import date, time, timedelta
 
 from pawpal_system import (
     Frequency,
@@ -22,10 +23,16 @@ from pawpal_system import (
 
 # A Monday, so the weekly task below is due.
 TODAY = date(2026, 10, 12)
+WIDTH = 62
 
 
 def build_owner() -> Owner:
-    """Set up one owner with two pets and seven tasks between them."""
+    """Set up one owner with two pets and eight tasks between them.
+
+    Tasks are added deliberately out of chronological order so that
+    sort_by_time() has something real to do. Two of them are pinned to
+    overlapping times so conflict detection has something to find.
+    """
     owner = Owner("Jordan", day_start=time(7, 30), day_end=time(10, 0))
 
     cat = Pet("Mochi", "cat", breed="tabby", age=3)
@@ -33,26 +40,108 @@ def build_owner() -> Owner:
     owner.add_pet(cat)
     owner.add_pet(dog)
 
-    # Pinned: these have to happen at a specific time.
-    cat.add_task(Task("Insulin shot", 5, Priority.HIGH, fixed_time=time(7, 30)))
-    dog.add_task(Task("Breakfast", 10, Priority.HIGH, fixed_time=time(8, 0)))
-
-    # Flexible: the scheduler decides when.
-    dog.add_task(Task("Morning walk", 30, Priority.HIGH))
-    cat.add_task(Task("Litter box", 10, Priority.MEDIUM))
+    # Added last-thing-first on purpose, to prove the sort works.
     dog.add_task(Task("Nail trim", 25, Priority.LOW))
-
-    # Recurring: only due on certain days.
-    dog.add_task(
-        Task("Brush coat", 20, Priority.LOW,
-             frequency=Frequency.WEEKLY, weekday=0)
-    )
+    dog.add_task(Task("Breakfast", 10, Priority.HIGH, fixed_time=time(8, 0)))
     cat.add_task(
         Task("Vet checkup", 60, Priority.HIGH,
              frequency=Frequency.ONCE, due_date=TODAY)
     )
+    cat.add_task(Task("Insulin shot", 5, Priority.HIGH, fixed_time=time(7, 30)))
+    dog.add_task(Task("Morning walk", 30, Priority.HIGH))
+    dog.add_task(
+        Task("Brush coat", 20, Priority.LOW,
+             frequency=Frequency.WEEKLY, weekday=0)
+    )
+    cat.add_task(Task("Litter box", 10, Priority.MEDIUM))
+
+    # Deliberate clash with Breakfast at 08:00, for conflict detection.
+    cat.add_task(Task("Eye drops", 15, Priority.HIGH, fixed_time=time(8, 5)))
 
     return owner
+
+
+def banner(text: str) -> None:
+    """Print a section heading."""
+    print()
+    print("=" * WIDTH)
+    print(f"  {text}")
+    print("=" * WIDTH)
+
+
+def print_sorted(scheduler: Scheduler) -> None:
+    """Show sort_by_time() putting an out-of-order list straight."""
+    banner("SORTING - Scheduler.sort_by_time()")
+    print("  As entered:")
+    for task in scheduler.all_tasks():
+        print(f"    {_when(task):>9}  {task.title}")
+
+    print()
+    print("  Sorted by time (pinned first, flexible last):")
+    for task in scheduler.sort_by_time():
+        print(f"    {_when(task):>9}  {task.title}")
+
+
+def print_filtered(scheduler: Scheduler) -> None:
+    """Show filtering by pet and by completion status."""
+    banner("FILTERING - by pet, and by status")
+    for pet in scheduler.owner.pets:
+        tasks = scheduler.filter_by_pet(pet.name)
+        print(f"  {pet.label():<22} {len(tasks)} task(s)")
+        for task in scheduler.sort_by_time(tasks):
+            print(f"      {_when(task):>9}  {task.title}")
+
+    print()
+    outstanding = scheduler.filter_by_status(False)
+    done = scheduler.filter_by_status(True)
+    print(f"  Outstanding : {len(outstanding)}")
+    print(f"  Completed   : {len(done)}")
+
+
+def print_conflicts(scheduler: Scheduler) -> None:
+    """Show conflict detection warning rather than crashing."""
+    banner("CONFLICTS - Scheduler.find_conflicts()")
+    warnings = scheduler.find_conflicts(TODAY)
+    if not warnings:
+        print("  No clashes found.")
+        return
+    print(f"  {len(warnings)} clash(es) found. The app keeps running:")
+    for warning in warnings:
+        print(f"    ! {warning}")
+
+
+def print_recurring(scheduler: Scheduler) -> None:
+    """Show a daily task regenerating itself when completed."""
+    banner("RECURRING - completing a task queues the next one")
+
+    tomorrow = TODAY + timedelta(days=1)
+
+    feeding = Task("Evening feed", 10, Priority.HIGH)
+    scheduler.owner.pets[1].add_task(feeding)
+    print(f"  Added '{feeding.title}' (daily).")
+    print(f"  Outstanding copies today: {_count(scheduler, TODAY, feeding)}")
+
+    repeat = scheduler.complete_task(feeding, TODAY)
+    print()
+    print(f"  Marked complete on {TODAY:%a %d %b}.")
+    print(f"  A repeat was created, starting {repeat.starts_on:%a %d %b}.")
+    print()
+    print("  The completed original drops out and the repeat has not")
+    print("  started yet, so today is clear -- but tomorrow is covered:")
+    print(f"    outstanding today    : {_count(scheduler, TODAY, feeding)}")
+    print(f"    outstanding tomorrow : {_count(scheduler, tomorrow, feeding)}")
+
+
+def _count(scheduler: Scheduler, day: date, like: Task) -> int:
+    """Count outstanding tasks with the same title as `like`, due on `day`."""
+    return sum(
+        1 for t in scheduler.tasks_due_on(day) if t.title == like.title
+    )
+
+
+def _when(task: Task) -> str:
+    """Return a task's pinned time, or 'flexible'."""
+    return f"{task.fixed_time:%H:%M}" if task.is_pinned() else "flexible"
 
 
 def print_header(owner: Owner) -> None:
@@ -107,28 +196,22 @@ def print_footer(schedule, owner: Owner) -> None:
 
 
 def main() -> None:
-    """Build the demo day, plan it, and print the result."""
+    """Build the demo day and walk through every scheduling feature."""
     owner = build_owner()
     scheduler = Scheduler(owner)
-    schedule = scheduler.plan_for(TODAY)
 
     print_header(owner)
-    print_plan(schedule)
-    print_leftovers(schedule)
-    print_footer(schedule, owner)
+    print_sorted(scheduler)
+    print_filtered(scheduler)
+    print_conflicts(scheduler)
 
-    # Completing a task frees its time up for whatever got left out.
-    print()
-    print("  >> Marking 'Vet checkup' complete and re-planning...")
-    print()
-    for task in scheduler.all_tasks():
-        if task.title == "Vet checkup":
-            task.mark_complete()
-
+    banner("THE PLAN - Scheduler.plan_for()")
     schedule = scheduler.plan_for(TODAY)
     print_plan(schedule)
     print_leftovers(schedule)
     print_footer(schedule, owner)
+
+    print_recurring(scheduler)
 
 
 if __name__ == "__main__":

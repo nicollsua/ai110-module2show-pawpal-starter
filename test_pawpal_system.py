@@ -7,7 +7,7 @@ Reason strings are asserted on as substrings, not exact matches, so reworded
 messages do not break the suite.
 """
 
-from datetime import date, time
+from datetime import date, time, timedelta
 
 import pytest
 
@@ -827,6 +827,506 @@ class TestScheduler:
         second = scheduler.plan_for(MONDAY)
         assert first is not second
         assert titles(first) == titles(second)
+
+
+class TestSortByTime:
+    def test_no_tasks_sorts_to_nothing(self):
+        assert Scheduler(make_owner()).sort_by_time() == []
+
+    def test_pinned_tasks_come_out_in_clock_order(self):
+        owner = make_owner(tasks=[
+            Task("Evening", 10, fixed_time=time(18, 0)),
+            Task("Morning", 10, fixed_time=time(8, 0)),
+            Task("Noon", 10, fixed_time=time(12, 0)),
+        ])
+        assert [t.title for t in Scheduler(owner).sort_by_time()] == [
+            "Morning", "Noon", "Evening",
+        ]
+
+    def test_minutes_are_ordered_not_just_hours(self):
+        owner = make_owner(tasks=[
+            Task("Later", 5, fixed_time=time(8, 45)),
+            Task("Earlier", 5, fixed_time=time(8, 5)),
+        ])
+        assert [t.title for t in Scheduler(owner).sort_by_time()] == [
+            "Earlier", "Later",
+        ]
+
+    def test_flexible_tasks_go_last(self):
+        owner = make_owner(tasks=[
+            Task("Flexible", 30),
+            Task("Pinned", 10, fixed_time=time(18, 0)),
+        ])
+        assert [t.title for t in Scheduler(owner).sort_by_time()] == [
+            "Pinned", "Flexible",
+        ]
+
+    def test_several_flexible_tasks_are_ordered_by_title(self):
+        # Without the title in the key these would come out in insertion
+        # order, which makes the output look random to a reader.
+        owner = make_owner(tasks=[Task("Zebra", 10), Task("Apple", 10)])
+        assert [t.title for t in Scheduler(owner).sort_by_time()] == [
+            "Apple", "Zebra",
+        ]
+
+    def test_midnight_sorts_first_not_last(self):
+        # time(0, 0) is falsy, so `t.fixed_time or time.min` must not treat
+        # it as missing. It happens to be time.min anyway, but the ordering
+        # is what matters.
+        owner = make_owner(tasks=[
+            Task("Later", 5, fixed_time=time(6, 0)),
+            Task("Midnight", 5, fixed_time=time(0, 0)),
+        ])
+        assert [t.title for t in Scheduler(owner).sort_by_time()][0] == (
+            "Midnight"
+        )
+
+    def test_sorting_does_not_reorder_the_pets_own_list(self):
+        owner = make_owner(tasks=[
+            Task("Evening", 10, fixed_time=time(18, 0)),
+            Task("Morning", 10, fixed_time=time(8, 0)),
+        ])
+        Scheduler(owner).sort_by_time()
+        assert [t.title for t in owner.pets[0].tasks] == ["Evening", "Morning"]
+
+    def test_accepts_an_explicit_list(self):
+        owner = make_owner()
+        given = [
+            Task("B", 10, fixed_time=time(9, 0)),
+            Task("A", 10, fixed_time=time(8, 0)),
+        ]
+        assert [t.title for t in Scheduler(owner).sort_by_time(given)] == [
+            "A", "B",
+        ]
+
+    def test_includes_completed_tasks(self):
+        done = Task("Done", 10, fixed_time=time(8, 0))
+        done.mark_complete()
+        assert len(Scheduler(make_owner(tasks=[done])).sort_by_time()) == 1
+
+
+class TestSortByPriority:
+    def test_most_urgent_first(self):
+        owner = make_owner(tasks=[
+            Task("Low", 10, Priority.LOW),
+            Task("High", 10, Priority.HIGH),
+            Task("Medium", 10, Priority.MEDIUM),
+        ])
+        assert [t.title for t in Scheduler(owner).sort_by_priority()] == [
+            "High", "Medium", "Low",
+        ]
+
+    def test_shorter_first_on_a_tie(self):
+        owner = make_owner(tasks=[
+            Task("Long", 60, Priority.HIGH),
+            Task("Short", 10, Priority.HIGH),
+        ])
+        assert [t.title for t in Scheduler(owner).sort_by_priority()] == [
+            "Short", "Long",
+        ]
+
+    def test_does_not_reorder_the_pets_own_list(self):
+        owner = make_owner(tasks=[
+            Task("Low", 10, Priority.LOW), Task("High", 10, Priority.HIGH),
+        ])
+        Scheduler(owner).sort_by_priority()
+        assert [t.title for t in owner.pets[0].tasks] == ["Low", "High"]
+
+
+class TestFiltering:
+    def test_filter_by_status_finds_outstanding(self):
+        done, todo = Task("Done", 10), Task("Todo", 10)
+        done.mark_complete()
+        owner = make_owner(tasks=[done, todo])
+        assert [t.title for t in Scheduler(owner).filter_by_status(False)] == [
+            "Todo",
+        ]
+
+    def test_filter_by_status_finds_completed(self):
+        done, todo = Task("Done", 10), Task("Todo", 10)
+        done.mark_complete()
+        owner = make_owner(tasks=[done, todo])
+        assert [t.title for t in Scheduler(owner).filter_by_status(True)] == [
+            "Done",
+        ]
+
+    def test_filter_by_status_partitions_everything(self):
+        done, todo = Task("Done", 10), Task("Todo", 10)
+        done.mark_complete()
+        scheduler = Scheduler(make_owner(tasks=[done, todo]))
+        assert len(scheduler.filter_by_status(True)) + len(
+            scheduler.filter_by_status(False)
+        ) == 2
+
+    def test_filter_by_pet_separates_two_pets(self):
+        owner = Owner("Jordan")
+        cat, dog = Pet("Mochi", "cat"), Pet("Biscuit", "dog")
+        owner.add_pet(cat)
+        owner.add_pet(dog)
+        cat.add_task(Task("Litter", 10))
+        dog.add_task(Task("Walk", 30))
+        scheduler = Scheduler(owner)
+        assert [t.title for t in scheduler.filter_by_pet("Mochi")] == ["Litter"]
+        assert [t.title for t in scheduler.filter_by_pet("Biscuit")] == ["Walk"]
+
+    def test_filter_by_pet_ignores_case(self):
+        owner = make_owner(tasks=[Task("Litter", 10)])
+        assert len(Scheduler(owner).filter_by_pet("MOCHI")) == 1
+
+    def test_filter_by_pet_ignores_surrounding_spaces(self):
+        owner = make_owner(tasks=[Task("Litter", 10)])
+        assert len(Scheduler(owner).filter_by_pet("  Mochi  ")) == 1
+
+    def test_filter_by_pet_returns_empty_for_an_unknown_name(self):
+        owner = make_owner(tasks=[Task("Litter", 10)])
+        assert Scheduler(owner).filter_by_pet("Nobody") == []
+
+    def test_filter_by_pet_includes_completed_tasks(self):
+        done = Task("Litter", 10)
+        done.mark_complete()
+        assert len(Scheduler(make_owner(tasks=[done])).filter_by_pet(
+            "Mochi")) == 1
+
+    def test_filter_by_priority(self):
+        owner = make_owner(tasks=[
+            Task("High", 10, Priority.HIGH), Task("Low", 10, Priority.LOW),
+        ])
+        result = Scheduler(owner).filter_by_priority(Priority.HIGH)
+        assert [t.title for t in result] == ["High"]
+
+    def test_filter_by_priority_with_no_matches(self):
+        owner = make_owner(tasks=[Task("High", 10, Priority.HIGH)])
+        assert Scheduler(owner).filter_by_priority(Priority.LOW) == []
+
+
+# --- Recurring tasks regenerating on completion -----------------------------
+
+
+class TestNextOccurrenceDate:
+    def test_daily_comes_back_tomorrow(self):
+        task = Task("Feed", 10, frequency=Frequency.DAILY)
+        assert task.next_occurrence_date(MONDAY) == TUESDAY
+
+    def test_daily_rolls_over_a_month_end(self):
+        task = Task("Feed", 10, frequency=Frequency.DAILY)
+        assert task.next_occurrence_date(date(2026, 10, 31)) == date(
+            2026, 11, 1
+        )
+
+    def test_daily_rolls_over_a_year_end(self):
+        task = Task("Feed", 10, frequency=Frequency.DAILY)
+        assert task.next_occurrence_date(date(2026, 12, 31)) == date(
+            2027, 1, 1
+        )
+
+    def test_weekly_completed_on_its_own_day_waits_a_full_week(self):
+        # Finishing Monday's bath must not make it due again this Monday.
+        task = Task("Bath", 30, frequency=Frequency.WEEKLY, weekday=0)
+        assert task.next_occurrence_date(MONDAY) == MONDAY + timedelta(days=7)
+
+    def test_weekly_completed_early_waits_until_its_day(self):
+        task = Task("Bath", 30, frequency=Frequency.WEEKLY, weekday=6)
+        # Monday -> the coming Sunday is 6 days away.
+        assert task.next_occurrence_date(MONDAY) == MONDAY + timedelta(days=6)
+
+    @pytest.mark.parametrize("weekday", range(7))
+    def test_weekly_always_lands_on_the_right_weekday(self, weekday):
+        task = Task("Bath", 30, frequency=Frequency.WEEKLY, weekday=weekday)
+        assert task.next_occurrence_date(MONDAY).weekday() == weekday
+
+    @pytest.mark.parametrize("weekday", range(7))
+    def test_weekly_next_date_is_always_in_the_future(self, weekday):
+        task = Task("Bath", 30, frequency=Frequency.WEEKLY, weekday=weekday)
+        assert task.next_occurrence_date(MONDAY) > MONDAY
+
+    def test_weekly_without_a_weekday_has_no_next_date(self):
+        task = Task("Bath", 30, frequency=Frequency.WEEKLY)
+        assert task.next_occurrence_date(MONDAY) is None
+
+    def test_once_never_comes_back(self):
+        task = Task("Vet", 60, frequency=Frequency.ONCE, due_date=MONDAY)
+        assert task.next_occurrence_date(MONDAY) is None
+
+
+class TestNextOccurrence:
+    def test_daily_produces_a_copy(self):
+        task = Task("Feed", 10, Priority.HIGH)
+        repeat = task.next_occurrence(MONDAY)
+        assert repeat is not task
+        assert repeat.title == "Feed"
+        assert repeat.priority is Priority.HIGH
+
+    def test_the_copy_is_not_completed(self):
+        task = Task("Feed", 10)
+        task.mark_complete()
+        assert task.next_occurrence(MONDAY).completed is False
+
+    def test_the_copy_keeps_a_pinned_time(self):
+        task = Task("Meds", 10, fixed_time=time(8, 0))
+        assert task.next_occurrence(MONDAY).fixed_time == time(8, 0)
+
+    def test_the_copy_starts_on_its_next_date(self):
+        assert Task("Feed", 10).next_occurrence(MONDAY).starts_on == TUESDAY
+
+    def test_the_copy_has_no_pet_until_it_is_added(self):
+        pet = Pet("Mochi", "cat")
+        task = Task("Feed", 10)
+        pet.add_task(task)
+        assert task.next_occurrence(MONDAY).pet is None
+
+    def test_once_has_no_next_occurrence(self):
+        task = Task("Vet", 60, frequency=Frequency.ONCE, due_date=MONDAY)
+        assert task.next_occurrence(MONDAY) is None
+
+
+class TestStartsOnGating:
+    def test_a_task_is_not_due_before_it_starts(self):
+        task = Task("Feed", 10, starts_on=TUESDAY)
+        assert not task.is_due_on(MONDAY)
+
+    def test_a_task_is_due_on_its_start_date(self):
+        task = Task("Feed", 10, starts_on=TUESDAY)
+        assert task.is_due_on(TUESDAY)
+
+    def test_a_daily_task_is_due_every_day_after_it_starts(self):
+        task = Task("Feed", 10, starts_on=TUESDAY)
+        assert task.is_due_on(TUESDAY + timedelta(days=5))
+
+    def test_starts_on_does_not_override_the_weekday_rule(self):
+        task = Task("Bath", 30, frequency=Frequency.WEEKLY, weekday=0,
+                    starts_on=TUESDAY)
+        assert not task.is_due_on(TUESDAY)
+        assert task.is_due_on(MONDAY + timedelta(days=7))
+
+
+class TestCompleteTask:
+    def test_marks_the_task_complete(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        task = owner.pets[0].tasks[0]
+        Scheduler(owner).complete_task(task, MONDAY)
+        assert task.completed is True
+
+    def test_returns_the_new_repeat(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        repeat = Scheduler(owner).complete_task(owner.pets[0].tasks[0], MONDAY)
+        assert repeat is not None
+        assert repeat.starts_on == TUESDAY
+
+    def test_the_repeat_is_attached_to_the_same_pet(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        pet = owner.pets[0]
+        repeat = Scheduler(owner).complete_task(pet.tasks[0], MONDAY)
+        assert repeat.pet is pet
+        assert repeat in pet.tasks
+
+    def test_the_repeat_is_not_due_today(self):
+        # The whole point of starts_on. Without it, completing a daily task
+        # would immediately add an identical one back into today's plan.
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        Scheduler(owner).complete_task(owner.pets[0].tasks[0], MONDAY)
+        assert plan(owner, MONDAY).scheduled == []
+
+    def test_the_repeat_is_due_tomorrow(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        Scheduler(owner).complete_task(owner.pets[0].tasks[0], MONDAY)
+        assert titles(plan(owner, TUESDAY)) == ["Feed"]
+
+    def test_a_one_off_does_not_come_back(self):
+        owner = make_owner(tasks=[
+            Task("Vet", 60, frequency=Frequency.ONCE, due_date=MONDAY),
+        ])
+        assert Scheduler(owner).complete_task(
+            owner.pets[0].tasks[0], MONDAY
+        ) is None
+        assert len(owner.pets[0].tasks) == 1
+
+    def test_completing_twice_does_not_stack_up_repeats(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        scheduler = Scheduler(owner)
+        task = owner.pets[0].tasks[0]
+        scheduler.complete_task(task, MONDAY)
+        scheduler.complete_task(task, MONDAY)
+        assert len(owner.pets[0].tasks) == 2
+
+    def test_an_already_complete_task_returns_none(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        task = owner.pets[0].tasks[0]
+        task.mark_complete()
+        assert Scheduler(owner).complete_task(task, MONDAY) is None
+
+    def test_the_completed_original_is_kept_as_history(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        Scheduler(owner).complete_task(owner.pets[0].tasks[0], MONDAY)
+        assert len(Scheduler(owner).filter_by_status(True)) == 1
+
+    def test_a_weekly_task_comes_back_next_week(self):
+        owner = make_owner(tasks=[
+            Task("Bath", 30, frequency=Frequency.WEEKLY, weekday=0),
+        ])
+        Scheduler(owner).complete_task(owner.pets[0].tasks[0], MONDAY)
+        assert plan(owner, MONDAY).scheduled == []
+        assert titles(plan(owner, MONDAY + timedelta(days=7))) == ["Bath"]
+
+    def test_a_chain_of_completions_keeps_rolling_forward(self):
+        owner = make_owner(tasks=[Task("Feed", 10)])
+        scheduler = Scheduler(owner)
+        day = MONDAY
+        for _ in range(5):
+            due = scheduler.tasks_due_on(day)
+            assert len(due) == 1, f"expected exactly one task due on {day}"
+            scheduler.complete_task(due[0], day)
+            day += timedelta(days=1)
+        assert len(scheduler.filter_by_status(True)) == 5
+
+
+# --- Conflict detection -----------------------------------------------------
+
+
+class TestFindConflicts:
+    def test_no_tasks_means_no_conflicts(self):
+        assert Scheduler(make_owner()).find_conflicts(MONDAY) == []
+
+    def test_non_overlapping_pinned_tasks_are_fine(self):
+        owner = make_owner(tasks=[
+            Task("A", 30, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(9, 0)),
+        ])
+        assert Scheduler(owner).find_conflicts(MONDAY) == []
+
+    def test_overlapping_pinned_tasks_are_reported(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(8, 30)),
+        ])
+        assert len(Scheduler(owner).find_conflicts(MONDAY)) == 1
+
+    def test_the_warning_names_both_tasks(self):
+        owner = make_owner(tasks=[
+            Task("Walk", 60, fixed_time=time(8, 0)),
+            Task("Meds", 30, fixed_time=time(8, 30)),
+        ])
+        warning = Scheduler(owner).find_conflicts(MONDAY)[0]
+        assert "Walk" in warning and "Meds" in warning
+
+    def test_the_warning_names_the_pet(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(8, 30)),
+        ])
+        assert "Mochi" in Scheduler(owner).find_conflicts(MONDAY)[0]
+
+    def test_identical_times_conflict(self):
+        owner = make_owner(tasks=[
+            Task("A", 30, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(8, 0)),
+        ])
+        assert len(Scheduler(owner).find_conflicts(MONDAY)) == 1
+
+    def test_touching_exactly_is_not_a_conflict(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(9, 0)),
+        ])
+        assert Scheduler(owner).find_conflicts(MONDAY) == []
+
+    def test_one_minute_of_overlap_is_a_conflict(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(8, 59)),
+        ])
+        assert len(Scheduler(owner).find_conflicts(MONDAY)) == 1
+
+    def test_conflicts_across_different_pets_are_reported(self):
+        # Two pets still only have one owner to do the work.
+        owner = Owner("Jordan")
+        cat, dog = Pet("Mochi", "cat"), Pet("Biscuit", "dog")
+        owner.add_pet(cat)
+        owner.add_pet(dog)
+        cat.add_task(Task("Insulin", 30, fixed_time=time(8, 0)))
+        dog.add_task(Task("Walk", 30, fixed_time=time(8, 15)))
+        warning = Scheduler(owner).find_conflicts(MONDAY)[0]
+        assert "Mochi" in warning and "Biscuit" in warning
+
+    def test_flexible_tasks_never_conflict(self):
+        owner = make_owner(tasks=[Task("A", 120), Task("B", 120)])
+        assert Scheduler(owner).find_conflicts(MONDAY) == []
+
+    def test_a_flexible_task_does_not_conflict_with_a_pinned_one(self):
+        owner = make_owner(tasks=[
+            Task("Pinned", 60, fixed_time=time(8, 0)),
+            Task("Flexible", 60),
+        ])
+        assert Scheduler(owner).find_conflicts(MONDAY) == []
+
+    def test_three_mutually_overlapping_tasks_give_three_warnings(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 60, fixed_time=time(8, 10)),
+            Task("C", 60, fixed_time=time(8, 20)),
+        ])
+        assert len(Scheduler(owner).find_conflicts(MONDAY)) == 3
+
+    def test_each_pair_is_reported_once_not_twice(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 60, fixed_time=time(8, 30)),
+        ])
+        assert len(Scheduler(owner).find_conflicts(MONDAY)) == 1
+
+    def test_completed_tasks_do_not_conflict(self):
+        done = Task("A", 60, fixed_time=time(8, 0))
+        done.mark_complete()
+        owner = make_owner(tasks=[done, Task("B", 30, fixed_time=time(8, 30))])
+        assert Scheduler(owner).find_conflicts(MONDAY) == []
+
+    def test_tasks_not_due_today_do_not_conflict(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 60, frequency=Frequency.WEEKLY, weekday=6,
+                 fixed_time=time(8, 30)),
+        ])
+        assert Scheduler(owner).find_conflicts(MONDAY) == []
+
+    def test_detection_never_raises_on_odd_input(self):
+        # The whole point of the lightweight strategy: it warns, it does not
+        # crash, whatever it is handed.
+        owner = make_owner(tasks=[
+            Task("Midnight", 60, fixed_time=time(0, 0)),
+            Task("Also midnight", 60, fixed_time=time(0, 0)),
+        ])
+        assert isinstance(Scheduler(owner).find_conflicts(MONDAY), list)
+
+    def test_find_conflicts_changes_nothing(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(8, 30)),
+        ])
+        Scheduler(owner).find_conflicts(MONDAY)
+        assert len(owner.pets[0].tasks) == 2
+        assert all(not t.completed for t in owner.pets[0].tasks)
+
+
+class TestHasConflicts:
+    def test_false_when_clear(self):
+        owner = make_owner(tasks=[Task("A", 30, fixed_time=time(8, 0))])
+        assert Scheduler(owner).has_conflicts(MONDAY) is False
+
+    def test_true_when_clashing(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(8, 30)),
+        ])
+        assert Scheduler(owner).has_conflicts(MONDAY) is True
+
+    def test_agrees_with_find_conflicts(self):
+        owner = make_owner(tasks=[
+            Task("A", 60, fixed_time=time(8, 0)),
+            Task("B", 30, fixed_time=time(8, 30)),
+        ])
+        scheduler = Scheduler(owner)
+        assert scheduler.has_conflicts(MONDAY) == bool(
+            scheduler.find_conflicts(MONDAY)
+        )
 
 
 class TestCompletedTasksAreNotScheduled:

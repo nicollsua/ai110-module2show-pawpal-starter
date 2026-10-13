@@ -44,9 +44,10 @@ pip install -r requirements.txt
 
 ## 🖥️ Sample Output
 
-Terminal output from `python main.py`. One owner, two pets, seven tasks, and a
-150-minute morning. The second half shows what happens after a task is marked
-complete — the freed time lets a previously skipped task fit.
+Terminal output from `python main.py`. One owner, two pets, eight tasks
+added deliberately out of order, and a 150-minute morning. It walks
+through sorting, filtering, conflict detection, the plan itself, and a
+daily task regenerating when it is completed.
 
 ```
 ==============================================================
@@ -56,6 +57,56 @@ complete — the freed time lets a previously skipped task fit.
   Pets  : Mochi (cat), Biscuit (dog)
   Day   : Monday, October 12, 2026  (07:30-10:00, 150 min)
 
+
+==============================================================
+  SORTING - Scheduler.sort_by_time()
+==============================================================
+  As entered:
+     flexible  Vet checkup
+        07:30  Insulin shot
+     flexible  Litter box
+        08:05  Eye drops
+     flexible  Nail trim
+        08:00  Breakfast
+     flexible  Morning walk
+     flexible  Brush coat
+
+  Sorted by time (pinned first, flexible last):
+        07:30  Insulin shot
+        08:00  Breakfast
+        08:05  Eye drops
+     flexible  Brush coat
+     flexible  Litter box
+     flexible  Morning walk
+     flexible  Nail trim
+     flexible  Vet checkup
+
+==============================================================
+  FILTERING - by pet, and by status
+==============================================================
+  Mochi (cat)            4 task(s)
+          07:30  Insulin shot
+          08:05  Eye drops
+       flexible  Litter box
+       flexible  Vet checkup
+  Biscuit (dog)          4 task(s)
+          08:00  Breakfast
+       flexible  Brush coat
+       flexible  Morning walk
+       flexible  Nail trim
+
+  Outstanding : 8
+  Completed   : 0
+
+==============================================================
+  CONFLICTS - Scheduler.find_conflicts()
+==============================================================
+  1 clash(es) found. The app keeps running:
+    ! Biscuit and Mochi overlap: Breakfast runs 08:00-08:10 but Eye drops starts 08:05
+
+==============================================================
+  THE PLAN - Scheduler.plan_for()
+==============================================================
 --------------------------------------------------------------
   TIME          TASK             PET       WHY
 --------------------------------------------------------------
@@ -68,35 +119,27 @@ complete — the freed time lets a previously skipped task fit.
 --------------------------------------------------------------
 
   NOT SCHEDULED
+    - Eye drops (15 min) - fixed time 08:05 overlaps Breakfast
     - Nail trim (25 min) - needs 25 min but the largest free gap left is 15 min
 
-  6 task(s) scheduled, 1 left out.
+  6 task(s) scheduled, 2 left out.
   Using 135 of 150 minutes (15 min spare).
 ==============================================================
 
-  >> Marking 'Vet checkup' complete and re-planning...
-
---------------------------------------------------------------
-  TIME          TASK             PET       WHY
---------------------------------------------------------------
-  07:30-07:35   Insulin shot     Mochi     pinned to 07:30
-  07:35-07:45   Litter box       Mochi     medium priority, earliest free 10 min slot
-  08:00-08:10   Breakfast        Biscuit   pinned to 08:00
-  08:10-08:40   Morning walk     Biscuit   high priority, earliest free 30 min slot
-  08:40-09:00   Brush coat       Biscuit   low priority, earliest free 20 min slot
-  09:00-09:25   Nail trim        Biscuit   low priority, earliest free 25 min slot
---------------------------------------------------------------
-
-  6 task(s) scheduled, 0 left out.
-  Using 100 of 150 minutes (50 min spare).
 ==============================================================
-```
+  RECURRING - completing a task queues the next one
+==============================================================
+  Added 'Evening feed' (daily).
+  Outstanding copies today: 1
 
-Worth noticing in that output: **Litter box (medium) is scheduled before Morning
-walk (high)**. That is not a priority bug. Morning walk is considered first, but
-needs 30 minutes and the 07:35–08:00 gap only has 25, so it lands at 08:10.
-Litter box then backfills the small gap. Higher priority wins the *choice* of
-slot, not necessarily the earliest clock time.
+  Marked complete on Mon 12 Oct.
+  A repeat was created, starting Tue 13 Oct.
+
+  The completed original drops out and the repeat has not
+  started yet, so today is clear -- but tomorrow is covered:
+    outstanding today    : 0
+    outstanding tomorrow : 1
+```
 
 ## 🧪 Testing PawPal+
 
@@ -112,26 +155,85 @@ Sample test output:
 
 ```
 $ python -m pytest -q
-........................................................................ [ 50%]
-........................................................................ [100%]
-144 passed in 0.16s
+........................................................................ [ 21%]
+........................................................................ [ 42%]
+........................................................................ [ 64%]
+........................................................................ [ 85%]
+...............................................                          [100%]
+335 passed in 5.88s
 ```
 
-Tests live in two files:
+Tests live in four files:
 
-- `test_pawpal_system.py` — the full suite (142 tests), grouped by the unit under test
-- `tests/test_pawpal.py` — two quick checks for task completion and task addition
+| File | Tests | Covers |
+|------|-------|--------|
+| `test_pawpal_system.py` | 226 | The logic layer — sorting, filtering, conflicts, recurrence, completion, edge cases |
+| `test_app.py` | 77 | The Streamlit glue — session state, form handling, table rows |
+| `test_ui.py` | 30 | The real app, driven through Streamlit's `AppTest` harness |
+| `tests/test_pawpal.py` | 2 | Quick checks for task completion and task addition |
+
+`test_ui.py` runs `app.py` the same way `streamlit run` does, with real session
+state and real reruns. It is the only layer that can catch a broken wire-up —
+a button calling the wrong method, or an `Owner` being rebuilt empty on every
+click.
 
 ## 📐 Smarter Scheduling
 
-| Feature | Method(s) | Notes |
-|---------|-----------|-------|
-| Task sorting | `Schedule.generate()`, `Priority.rank()` | Pinned tasks first in `fixed_time` order, then flexible tasks by priority descending, duration ascending, title. Shortest-first on a priority tie fits more tasks into the day. |
-| Filtering | `Scheduler.tasks_due_on()`, `Task.is_due_on()`, `Task.mark_complete()` | Tasks are dropped before planning if they are not due today or already complete. Tasks that are due but do not fit go to `Schedule.skipped` with a reason, so nothing silently disappears. |
-| Conflict handling | `Schedule.generate()` | Two pinned tasks that overlap: the earlier one wins, the later is skipped and told why. Tasks that touch exactly (09:00–10:00 and 10:00–10:30) do not count as a conflict. Anything falling outside the owner's window is skipped. |
-| Recurring tasks | `Task.is_due_on()`, `Frequency` | `DAILY` is always due. `WEEKLY` matches on `weekday` (0 = Monday). `ONCE` matches on `due_date`. A recurring task missing its field returns `False` rather than defaulting to every day. |
-| Gap filling | `Schedule.generate()` | Free gaps between pinned tasks are computed, then flexible tasks take the earliest gap large enough. This is why a shorter medium-priority task can land before a longer high-priority one. |
-| Explanation | `Schedule.explain()`, `ScheduledTask.reason` | Every scheduled task carries the reason it landed where it did, and every skipped task carries why it was left out. |
+### Sorting
+
+| Method | Behavior |
+|--------|----------|
+| `Scheduler.sort_by_time()` | Pinned tasks in clock order first, flexible tasks last, ties broken by title. Sorts a copy, so each pet's own list keeps its entry order. |
+| `Scheduler.sort_by_priority()` | Most urgent first, then shortest first on a tie, then title. |
+| `Priority.rank()` | Turns the enum into a sortable integer. Sorting the names alphabetically would put `high` before `low` before `medium` — meaningless. |
+
+The sort key in `sort_by_time()` is a three-part tuple:
+`(fixed_time is None, fixed_time or time.min, title)`. `False` sorts before
+`True`, so the first element alone pushes every flexible task to the back.
+
+### Filtering
+
+| Method | Behavior |
+|--------|----------|
+| `Scheduler.filter_by_pet(name)` | Tasks for one pet, matched case-insensitively. Returns `[]` for an unknown name rather than raising, since it is driven by user input. |
+| `Scheduler.filter_by_status(completed)` | Done (`True`) or outstanding (`False`). |
+| `Scheduler.filter_by_priority(priority)` | Tasks at exactly one level. |
+| `Scheduler.tasks_due_on(day)` | The planning filter: outstanding **and** due today. |
+| `Scheduler.pending_tasks()` / `completed_tasks()` | The two halves of the full list. |
+
+### Conflict detection
+
+| Method | Behavior |
+|--------|----------|
+| `Scheduler.find_conflicts(day)` | Returns a list of plain-English warnings, one per clashing pair. Never raises and never changes anything — the caller decides whether to show them. |
+| `Scheduler.has_conflicts(day)` | The same check as a single boolean. |
+
+Compares every pair of pinned tasks with `itertools.combinations`. Only pinned
+tasks can clash, since a flexible task has no fixed time yet. Tasks that touch
+exactly (08:00–09:00 and 09:00–09:30) are back to back, not in conflict.
+Conflicts across *different* pets are still reported — two pets, one owner.
+
+### Recurring tasks
+
+| Method | Behavior |
+|--------|----------|
+| `Task.is_due_on(day)` | `DAILY` always, `WEEKLY` on a matching weekday, `ONCE` on `due_date`. A task missing the field its frequency needs returns `False` rather than defaulting to every day. |
+| `Task.next_occurrence_date(on)` | Daily → tomorrow. Weekly → the next matching weekday, always at least 7 days out. Once → `None`. |
+| `Task.next_occurrence(on)` | A fresh uncompleted copy stamped with that date. |
+| `Scheduler.complete_task(task, on)` | Marks it done **and** attaches the next occurrence to the same pet. Completing twice cannot stack up duplicates. |
+
+The `starts_on` field is what makes this work: a repeat is not due before that
+date. Without it, completing a daily task would immediately put an identical
+copy back into *today's* plan. The completed original is kept rather than
+deleted, so a pet's task list doubles as a record of what was done.
+
+### Planning and explanation
+
+| Method | Behavior |
+|--------|----------|
+| `Schedule.generate()` | Places pinned tasks first, computes the free gaps between them, then fills those gaps with flexible tasks by priority. |
+| `Schedule.explain()` | The whole plan as readable text. |
+| `ScheduledTask.reason` / `SkippedTask.reason` | Why each task landed where it did, or why it was left out. |
 
 ## 📸 Demo Walkthrough
 

@@ -66,10 +66,32 @@ So the final count is seven classes plus two enums, not the four classes I start
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
 - How did you decide which constraints mattered most?
 
+My scheduler works with five constraints, and the order I check them in *is* the ranking:
+
+1. **The owner's time window.** `day_start` to `day_end`. Nothing gets planned outside it, full stop. This is first because it's the actual problem — a busy owner doesn't have unlimited hours, and a planner that ignores that is just a to-do list.
+2. **Fixed times.** If a task is pinned to 8am, it happens at 8am or it doesn't happen. No negotiating.
+3. **Whether it's even due today.** Daily, weekly, or a one-off on a specific date. A weekly bath shouldn't clutter up the other six days.
+4. **Whether it's already done.** Ticked-off tasks come out before planning starts.
+5. **Priority, then duration.** High before medium before low, and on a tie the shorter task first so more fits.
+
+I decided the order by asking what would be *worst* to get wrong. Scheduling the cat's insulin at the wrong time is a real problem. Doing the nail trim before the walk isn't. So hard constraints that can't bend go first, and priority — which is really just a preference — comes last.
+
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
+
+**The big one: my scheduler is greedy, not optimal.** It walks the task list once in priority order, drops each task in the first gap big enough, and never goes back to reconsider.
+
+That means it can leave time on the table. In the sample output in the README, "Nail trim" (25 min) gets skipped because the largest remaining gap is 15 minutes — but there was 15 minutes free *earlier* too, and a smarter algorithm could have shuffled things to make one 25-minute block. Mine doesn't look for that. Finding the genuinely best packing is a bin-packing problem, which is NP-hard, so "optimal" means either an exponential search or a real constraint solver.
+
+I think greedy is the right call here. A pet owner has maybe ten tasks in a morning, so the difference between my answer and a perfect one is usually one small task. What you lose in packing efficiency, you gain in being able to explain yourself — every task carries a sentence saying why it landed where it did, and skipped ones say exactly what they needed and what was actually free. A perfect schedule nobody can argue with is worth less than a good one you can look at and go "oh, that's why."
+
+**A second tradeoff: pinned always beats flexible, even when the flexible task is more important.** A low-priority task pinned to 8am will push out a high-priority flexible one if time is short. That looks wrong written down, but it's deliberate — medication at 8am isn't a preference, it's a requirement, and priority is a softer signal than a fixed time.
+
+**A third one, about conflict detection.** `find_conflicts()` compares every pair of pinned tasks, which is O(n²). A sweep-line algorithm would be O(n log n). I kept the pairwise version because with under fifty tasks the difference is unmeasurable, and the pairwise loop is something I can read and be sure is correct. I did take one refactor here — swapping a hand-written nested loop for `itertools.combinations(pinned, 2)`, which says "every pair" in actual words instead of making you decode an index slice. That one was both shorter *and* clearer, so it was an easy yes. I turned down the sweep-line version because it was only faster in a way I'd never notice, and harder to read in a way I definitely would.
+
+One limitation I should be honest about: conflict detection only looks at *pinned* tasks. Two flexible tasks can never conflict, because the scheduler just puts them in different gaps. But that also means the warning list doesn't tell you "your day is overbooked" — only "these two fixed appointments clash." Overbooking shows up in the skipped list instead, which works, but it's a second place to look.
 
 ---
 
