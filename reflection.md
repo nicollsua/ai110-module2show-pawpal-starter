@@ -42,7 +42,19 @@ Once I had `pawpal_system.py` written out I had AI review it for missing relatio
 
 **8. I added a `SkippedTask` class.** I had skipped tasks stored as `(task, reason)` tuples, which meant getting a reason looked like `schedule.skipped[0][1]`. That's unreadable. It's funny because I'd already solved this exact problem with `ScheduledTask` and didn't notice I was doing the opposite thing right next to it. Now it's `skipped[0].reason`.
 
-So the final count is six classes plus two enums, not the four classes I started with. Most of the growth came from the same realization over and over: a thing, and a fact *about* that thing in one specific situation, want to be two separate objects.
+### Changes during implementation
+
+Two more things changed once I was actually writing the code.
+
+**9. I split `Scheduler` out from `Schedule`.** I'd had one class doing both jobs. But "go get all the tasks from all the pets and work out which ones count today" and "here is Monday's finished plan" are different responsibilities, and jamming them together meant I had no clean place to put things like "show me everything still pending." So `Scheduler` is the brain — it holds the owner, pulls tasks, filters them, and hands back a `Schedule`. `Schedule` is just one day's answer.
+
+The part I had to think about was how `Scheduler` should reach the task data. The easy version is looping over `owner.pets` and then `pet.tasks` inside `Scheduler`, but that means `Scheduler` has to know how `Owner` stores pets and how `Pet` stores tasks. If either ever changes, `Scheduler` breaks. So it calls `Owner.all_tasks()` instead and lets `Owner` handle its own pets. `Scheduler` never touches `pet.tasks` directly.
+
+**10. Tasks needed a completion status.** Adding `completed` and `mark_complete()` turned out to matter more than I expected, because the scheduler now filters completed tasks out before planning. That means ticking something off actually frees up its time and a task that got skipped earlier can fit. You can see this in the sample output in the README — marking the vet checkup done lets the nail trim in.
+
+One thing I was careful about: a completed task is filtered out *before* planning, so it never shows up in the skipped list. "Already done" and "couldn't fit" are different things and lumping them together would have been confusing to read.
+
+So the final count is seven classes plus two enums, not the four classes I started with. Most of the growth came from the same realization over and over: a thing, and a fact *about* that thing in one specific situation, want to be two separate objects.
 
 
 ---

@@ -19,6 +19,7 @@ from pawpal_system import (
     Priority,
     Schedule,
     ScheduledTask,
+    Scheduler,
     SkippedTask,
     Task,
     to_minutes,
@@ -185,6 +186,40 @@ class TestTaskIsPinned:
     def test_midnight_still_counts_as_pinned(self):
         # time(0, 0) is falsy; `if self.fixed_time:` would get this wrong.
         assert Task("Meds", 10, fixed_time=time(0, 0)).is_pinned()
+
+
+class TestTaskCompletion:
+    def test_tasks_start_incomplete(self):
+        assert Task("Walk", 30).completed is False
+
+    def test_mark_complete_flips_the_flag(self):
+        task = Task("Walk", 30)
+        task.mark_complete()
+        assert task.completed is True
+
+    def test_mark_complete_is_idempotent(self):
+        task = Task("Walk", 30)
+        task.mark_complete()
+        task.mark_complete()
+        assert task.completed is True
+
+    def test_mark_incomplete_undoes_it(self):
+        task = Task("Walk", 30)
+        task.mark_complete()
+        task.mark_incomplete()
+        assert task.completed is False
+
+    def test_completing_one_task_does_not_affect_another(self):
+        a, b = Task("Walk", 30), Task("Feed", 10)
+        a.mark_complete()
+        assert b.completed is False
+
+    def test_completion_does_not_change_anything_else(self):
+        task = Task("Walk", 30, Priority.HIGH)
+        task.mark_complete()
+        assert task.title == "Walk"
+        assert task.duration_minutes == 30
+        assert task.priority is Priority.HIGH
 
 
 class TestTaskIsDueOn:
@@ -690,6 +725,139 @@ class TestGenerateEdgeCases:
         schedule = plan(owner)
         assert titles(schedule) == ["Late"]
         assert schedule.scheduled[0].end_time == time(23, 45)
+
+
+# --- Scheduler --------------------------------------------------------------
+
+
+class TestScheduler:
+    def test_all_tasks_with_no_pets(self):
+        assert Scheduler(Owner("Jordan")).all_tasks() == []
+
+    def test_all_tasks_gathers_across_pets(self):
+        owner = Owner("Jordan")
+        cat, dog = Pet("Mochi", "cat"), Pet("Biscuit", "dog")
+        owner.add_pet(cat)
+        owner.add_pet(dog)
+        cat.add_task(Task("Litter", 10))
+        dog.add_task(Task("Walk", 30))
+        assert sorted(
+            t.title for t in Scheduler(owner).all_tasks()
+        ) == ["Litter", "Walk"]
+
+    def test_all_tasks_includes_completed_ones(self):
+        done = Task("Walk", 30)
+        done.mark_complete()
+        assert len(Scheduler(make_owner(tasks=[done])).all_tasks()) == 1
+
+    def test_pending_excludes_completed(self):
+        done, todo = Task("Done", 30), Task("Todo", 30)
+        done.mark_complete()
+        owner = make_owner(tasks=[done, todo])
+        assert [t.title for t in Scheduler(owner).pending_tasks()] == ["Todo"]
+
+    def test_completed_tasks_returns_only_completed(self):
+        done, todo = Task("Done", 30), Task("Todo", 30)
+        done.mark_complete()
+        owner = make_owner(tasks=[done, todo])
+        assert [t.title for t in Scheduler(owner).completed_tasks()] == ["Done"]
+
+    def test_pending_and_completed_partition_everything(self):
+        done, todo = Task("Done", 30), Task("Todo", 30)
+        done.mark_complete()
+        scheduler = Scheduler(make_owner(tasks=[done, todo]))
+        assert len(scheduler.pending_tasks()) + len(
+            scheduler.completed_tasks()
+        ) == len(scheduler.all_tasks())
+
+    def test_tasks_due_on_filters_by_frequency(self):
+        owner = make_owner(tasks=[
+            Task("Daily", 10),
+            Task("Bath", 20, frequency=Frequency.WEEKLY, weekday=0),
+        ])
+        due = Scheduler(owner).tasks_due_on(TUESDAY)
+        assert [t.title for t in due] == ["Daily"]
+
+    def test_tasks_due_on_excludes_completed(self):
+        done = Task("Done", 30)
+        done.mark_complete()
+        owner = make_owner(tasks=[done, Task("Todo", 30)])
+        due = Scheduler(owner).tasks_due_on(MONDAY)
+        assert [t.title for t in due] == ["Todo"]
+
+    def test_tasks_for_pet_separates_pets(self):
+        owner = Owner("Jordan")
+        cat, dog = Pet("Mochi", "cat"), Pet("Biscuit", "dog")
+        owner.add_pet(cat)
+        owner.add_pet(dog)
+        cat.add_task(Task("Litter", 10))
+        dog.add_task(Task("Walk", 30))
+        scheduler = Scheduler(owner)
+        assert [t.title for t in scheduler.tasks_for_pet(cat)] == ["Litter"]
+        assert [t.title for t in scheduler.tasks_for_pet(dog)] == ["Walk"]
+
+    def test_tasks_for_pet_with_no_tasks(self):
+        owner = Owner("Jordan")
+        pet = Pet("Mochi", "cat")
+        owner.add_pet(pet)
+        assert Scheduler(owner).tasks_for_pet(pet) == []
+
+    def test_plan_for_returns_a_generated_schedule(self):
+        owner = make_owner(tasks=[Task("Walk", 30)])
+        schedule = Scheduler(owner).plan_for(MONDAY)
+        assert isinstance(schedule, Schedule)
+        assert titles(schedule) == ["Walk"]
+
+    def test_plan_for_matches_building_a_schedule_by_hand(self):
+        owner = make_owner(tasks=[Task("Walk", 30), Task("Feed", 10)])
+        assert titles(Scheduler(owner).plan_for(MONDAY)) == titles(plan(owner))
+
+    def test_plan_for_different_days_gives_different_plans(self):
+        owner = make_owner(tasks=[
+            Task("Bath", 30, frequency=Frequency.WEEKLY, weekday=0),
+        ])
+        scheduler = Scheduler(owner)
+        assert titles(scheduler.plan_for(MONDAY)) == ["Bath"]
+        assert titles(scheduler.plan_for(TUESDAY)) == []
+
+    def test_scheduler_holds_no_state_between_plans(self):
+        owner = make_owner(tasks=[Task("Walk", 30)])
+        scheduler = Scheduler(owner)
+        first = scheduler.plan_for(MONDAY)
+        second = scheduler.plan_for(MONDAY)
+        assert first is not second
+        assert titles(first) == titles(second)
+
+
+class TestCompletedTasksAreNotScheduled:
+    def test_completed_task_is_left_out_of_the_plan(self):
+        done = Task("Walk", 30)
+        done.mark_complete()
+        assert plan(make_owner(tasks=[done])).scheduled == []
+
+    def test_completed_task_is_not_reported_as_skipped(self):
+        # Already done is not the same as could not fit.
+        done = Task("Walk", 30)
+        done.mark_complete()
+        assert plan(make_owner(tasks=[done])).skipped == []
+
+    def test_completing_a_task_frees_time_for_another(self):
+        done = Task("Long", 60, Priority.HIGH)
+        other = Task("Short", 45, Priority.LOW)
+        owner = make_owner(start=time(8, 0), end=time(9, 0),
+                           tasks=[done, other])
+        assert titles(plan(owner)) == ["Long"]
+        done.mark_complete()
+        assert titles(plan(owner)) == ["Short"]
+
+    def test_completed_pinned_task_frees_its_slot(self):
+        done = Task("Meds", 60, fixed_time=time(8, 0))
+        flexible = Task("Walk", 60, Priority.HIGH)
+        owner = make_owner(start=time(8, 0), end=time(9, 0),
+                           tasks=[done, flexible])
+        assert titles(plan(owner)) == ["Meds"]
+        done.mark_complete()
+        assert titles(plan(owner)) == ["Walk"]
 
 
 # --- Schedule.total_minutes -------------------------------------------------

@@ -45,7 +45,10 @@ classDiagram
         +int weekday
         +date due_date
         +time fixed_time
+        +bool completed
         +Pet pet
+        +mark_complete() None
+        +mark_incomplete() None
         +is_pinned() bool
         +is_due_on(day date) bool
     }
@@ -74,10 +77,22 @@ classDiagram
         +total_minutes() int
     }
 
+    class Scheduler {
+        +Owner owner
+        +all_tasks() list~Task~
+        +pending_tasks() list~Task~
+        +completed_tasks() list~Task~
+        +tasks_due_on(day date) list~Task~
+        +tasks_for_pet(pet Pet) list~Task~
+        +plan_for(day date) Schedule
+    }
+
     Owner "1" --> "*" Pet : owns
     Pet "1" --> "*" Task : has
     Task --> Priority : uses
     Task --> Frequency : uses
+    Scheduler "1" --> "1" Owner : reads tasks from
+    Scheduler ..> Schedule : produces
     Schedule "1" --> "1" Owner : plans for
     Schedule "1" --> "*" ScheduledTask : contains
     Schedule "1" --> "*" SkippedTask : contains

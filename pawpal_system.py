@@ -114,7 +114,16 @@ class Task:
     weekday: int | None = None
     due_date: date | None = None
     fixed_time: time | None = None
+    completed: bool = False
     pet: Pet | None = None
+
+    def mark_complete(self) -> None:
+        """Mark this task done so it drops out of the remaining plan."""
+        self.completed = True
+
+    def mark_incomplete(self) -> None:
+        """Undo mark_complete, for when something gets ticked off by mistake."""
+        self.completed = False
 
     def is_pinned(self) -> bool:
         """Return True if this task must happen at a specific time."""
@@ -250,7 +259,9 @@ class Schedule:
             f"{self.owner.day_start:%H:%M}-{self.owner.day_end:%H:%M}"
         )
 
-        due = [t for t in self.owner.all_tasks() if t.is_due_on(self.day)]
+        # Ask the Scheduler rather than reaching into pet.tasks directly, so
+        # "which tasks count today" is decided in exactly one place.
+        due = Scheduler(self.owner).tasks_due_on(self.day)
 
         pinned = sorted(
             (t for t in due if t.is_pinned()),
@@ -391,3 +402,47 @@ class Schedule:
     def total_minutes(self) -> int:
         """Return how many minutes of the day the plan actually uses."""
         return sum(item.task.duration_minutes for item in self.scheduled)
+
+
+@dataclass
+class Scheduler:
+    """The brain: retrieves tasks across all of an owner's pets and plans them.
+
+    Deliberately separate from Schedule. A Schedule is one day's answer --
+    a fixed list of placements you can hand to the UI. The Scheduler is the
+    thing that goes and gets the tasks and decides what counts, and it can
+    produce as many Schedules as you ask it for without holding any of them.
+
+    How it reaches pet data: it never touches pet.tasks directly. It asks
+    Owner.all_tasks(), which flattens every pet's list into one. That keeps
+    the Owner in charge of its own pets, so adding a pet or changing how
+    pets store tasks needs no change here.
+    """
+
+    owner: Owner
+
+    def all_tasks(self) -> list[Task]:
+        """Return every task across every pet, done or not."""
+        return self.owner.all_tasks()
+
+    def pending_tasks(self) -> list[Task]:
+        """Return every task that has not been marked complete."""
+        return [t for t in self.all_tasks() if not t.completed]
+
+    def completed_tasks(self) -> list[Task]:
+        """Return every task already marked complete."""
+        return [t for t in self.all_tasks() if t.completed]
+
+    def tasks_due_on(self, day: date) -> list[Task]:
+        """Return the tasks that still need doing on the given day."""
+        return [t for t in self.pending_tasks() if t.is_due_on(day)]
+
+    def tasks_for_pet(self, pet: Pet) -> list[Task]:
+        """Return the tasks belonging to one specific pet."""
+        return [t for t in self.all_tasks() if t.pet is pet]
+
+    def plan_for(self, day: date) -> Schedule:
+        """Build and return a finished Schedule for the given day."""
+        schedule = Schedule(self.owner, day)
+        schedule.generate()
+        return schedule
