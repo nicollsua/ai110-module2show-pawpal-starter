@@ -143,39 +143,94 @@ daily task regenerating when it is completed.
 
 ## 🧪 Testing PawPal+
 
+Run the whole suite:
+
 ```bash
-# Run the full test suite:
-pytest
-
-# Run with coverage:
-pytest --cov
+python -m pytest
 ```
 
-Sample test output:
+Or just one layer:
 
-```
-$ python -m pytest -q
-........................................................................ [ 21%]
-........................................................................ [ 42%]
-........................................................................ [ 64%]
-........................................................................ [ 85%]
-...............................................                          [100%]
-335 passed in 5.88s
+```bash
+python -m pytest tests/          # the behaviour suite
+python -m pytest -q              # quiet, one line per file
+python -m pytest -k conflict     # only conflict tests
 ```
 
-Tests live in four files:
+### What the tests cover
 
 | File | Tests | Covers |
 |------|-------|--------|
-| `test_pawpal_system.py` | 226 | The logic layer — sorting, filtering, conflicts, recurrence, completion, edge cases |
-| `test_app.py` | 77 | The Streamlit glue — session state, form handling, table rows |
+| `test_pawpal_system.py` | 226 | The logic layer, grouped by method — every branch of sorting, filtering, conflicts, recurrence, completion and planning |
+| `test_app.py` | 77 | The Streamlit glue, grouped by helper — session state, form handling, table rows |
+| `tests/test_pawpal.py` | 66 | The same system grouped by *behaviour*, readable top to bottom as a description of what PawPal+ guarantees |
 | `test_ui.py` | 30 | The real app, driven through Streamlit's `AppTest` harness |
-| `tests/test_pawpal.py` | 2 | Quick checks for task completion and task addition |
 
-`test_ui.py` runs `app.py` the same way `streamlit run` does, with real session
-state and real reruns. It is the only layer that can catch a broken wire-up —
-a button calling the wrong method, or an `Owner` being rebuilt empty on every
-click.
+The four areas `tests/test_pawpal.py` pins down:
+
+- **Sorting correctness** — pinned tasks come back in clock order, flexible
+  ones last. Covers identical times, midnight (`time(0,0)` is falsy, so a
+  truthiness check would bury it), minutes rather than just hours, and that
+  sorting never reorders a pet's own list.
+- **Recurrence logic** — completing a daily task creates tomorrow's. Covers
+  month ends, year ends, leap days, and the subtle one: a weekly task
+  finished *on* its own weekday must wait a full 7 days, not 0.
+- **Conflict detection** — tasks at the same time are flagged with a warning
+  rather than an exception. Covers exact matches, one-minute overlaps,
+  touching exactly (*not* a conflict), clashes across different pets, and
+  that completed or not-due tasks are excluded.
+- **Empty states** — an owner with no pets, a pet with no tasks, a task with
+  no pet. None of them crash.
+
+`test_ui.py` runs `app.py` the same way `streamlit run` does, with real
+session state and real reruns. It is the only layer that can catch a broken
+wire-up — a button calling the wrong method, or an `Owner` being rebuilt
+empty on every click. It already caught one: a time picker disabled by a
+checkbox in the same form, which meant a pinned task could never be created
+through the UI at all.
+
+### Test output
+
+```
+$ python -m pytest
+test_app.py ............................................................ [ 15%]
+.................                                                        [ 19%]
+test_pawpal_system.py .................................................. [ 31%]
+........................................................................ [ 49%]
+........................................................................ [ 67%]
+................................                                         [ 75%]
+test_ui.py ..............................                                [ 83%]
+tests\test_pawpal.py ................................................... [ 96%]
+...............                                                          [100%]
+
+============================= 399 passed in 6.08s =============================
+```
+
+### Confidence level
+
+**★★★★☆ (4 / 5)**
+
+Four rather than five, and the missing star is deliberate.
+
+**What earns the four:** 399 tests across four layers, including the real
+Streamlit app. The edge cases that actually break schedulers are covered
+explicitly, not assumed — falsy `0` values for midnight and Monday, exact
+window boundaries, leap days, and double-submission. I also sanity-checked
+the suite by deliberately breaking four things in `pawpal_system.py` (weekly
+repeats landing same-day, touching tasks counting as overlaps, flexible tasks
+losing their sort position, and repeats being due immediately). All four
+mutations were caught, so the tests are doing real work rather than passing
+by luck.
+
+**What costs the fifth star:** I wrote both the code and the tests, so they
+agree with each other by construction — a misunderstanding of the *problem*
+would appear in both and the tests would happily confirm it. The scheduler
+has also never run against a real person's actual week. Specific gaps I know
+about: nothing is tested across a daylight-saving boundary, nothing covers
+hundreds of tasks, and there is no test for two people using the app at once
+because `st.session_state` is per-session by design. The terminal output in
+the Sample Output section above is the real check on whether the plans are
+sensible, and that is a human reading it, not an assertion.
 
 ## 📐 Smarter Scheduling
 

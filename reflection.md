@@ -116,10 +116,36 @@ One limitation I should be honest about: conflict detection only looks at *pinne
 - What behaviors did you test?
 - Why were these tests important?
 
+I ended up with 399 tests across four files. The three behaviors I focused on hardest were sorting, recurrence, and conflict detection, because those are the three places where being wrong is *quiet* — the app still runs, it just tells you the wrong thing.
+
+**Sorting.** The tests I care about most here aren't the obvious ones. Midnight was the big one: `time(0, 0)` is falsy in Python, so writing `if task.fixed_time:` would treat a midnight task as having no time at all and shove it to the bottom of the list. Same trap with `weekday=0` for Monday. Both of those would look fine in testing unless you specifically picked those values, so I did.
+
+**Recurrence.** The one that would have bitten me is a weekly task completed on its own weekday. The natural way to write it is `(target - today) % 7`, which gives 0 when they match — so finishing Monday's bath would make it due again immediately, that same Monday. I test that it waits a full seven days. I also test month ends, year ends, and leap days, since that's exactly the kind of thing you assume works until it doesn't.
+
+**Conflicts.** The distinction I wanted pinned down is touching versus overlapping. A task ending at 09:00 and another starting at 09:00 are back to back, not a clash, and getting that boundary wrong by one minute in either direction would make the app either cry wolf constantly or miss real conflicts.
+
+**Empty states.** An owner with no pets, a pet with no tasks, a task with no pet. These are boring and they're the ones that crash real apps.
+
+The tests also paid for themselves directly. When I refactored `find_conflicts()` to use `itertools.combinations`, all 335 tests at the time passed straight away, which is the only reason I was willing to touch working code at all.
+
 **b. Confidence**
 
 - How confident are you that your scheduler works correctly?
 - What edge cases would you test next if you had more time?
+
+**About 4 out of 5.** Confident, not certain.
+
+What makes me confident is that I checked the tests themselves rather than just trusting a green bar. I deliberately broke four things in `pawpal_system.py` — made weekly repeats land the same day, made touching tasks count as overlapping, dropped the flexible-last rule from the sort key, and let repeats be due immediately — and ran the suite each time. All four got caught. A test suite that passes tells you nothing on its own; one that fails when you break the code is actually doing something.
+
+What stops it being a 5 is that I wrote the code and the tests, so they agree with each other by construction. If I misunderstood the *problem* rather than the code, that misunderstanding is sitting in both and the tests would cheerfully confirm it. The thing that actually catches that is reading the terminal output in the README and asking "is that a sensible morning?" — and that's me looking at it, not an assertion.
+
+If I had more time, in order:
+
+1. **A real week.** Run it against an actual schedule for seven days and see if the plans are ones a person would follow.
+2. **Daylight saving.** I store times as wall-clock `time` objects with no timezone, so the day the clocks change, an hour either vanishes or happens twice. Completely untested.
+3. **Volume.** Everything is tested with under ten tasks. The conflict check compares every pair, so a hundred tasks is ten thousand comparisons — fine, but I don't actually know where it stops feeling instant.
+4. **Deliberately nasty input.** A 480-minute task in a 30-minute day, a task pinned to 23:59, every task at the same time.
+5. **Whether the greedy packing is good enough in practice.** I know it isn't optimal. I don't know how often that costs a real person a real task.
 
 ---
 
