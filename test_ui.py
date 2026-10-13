@@ -185,27 +185,105 @@ class TestAddTaskWiring:
 
 
 class TestCompletionWiring:
-    def test_a_tick_box_appears_for_each_task(self):
+    def test_a_done_button_appears_for_each_task(self):
         at = add_task_through_ui(add_pet_through_ui(launch()))
-        labels = [c.label for c in at.checkbox]
-        assert any("Morning walk" in label for label in labels)
+        assert any(b.key == "done_0" for b in at.button)
 
-    def test_ticking_a_task_marks_it_complete(self):
+    def test_clicking_done_marks_the_task_complete(self):
         at = add_task_through_ui(add_pet_through_ui(launch()))
-        at.checkbox("done_0").set_value(True).run()
+        at.button(key="done_0").click().run()
         assert Scheduler(owner_of(at)).all_tasks()[0].completed is True
-
-    def test_unticking_marks_it_incomplete_again(self):
-        at = add_task_through_ui(add_pet_through_ui(launch()))
-        at.checkbox("done_0").set_value(True).run()
-        at.checkbox("done_0").set_value(False).run()
-        assert Scheduler(owner_of(at)).all_tasks()[0].completed is False
 
     def test_a_completed_task_leaves_the_plan(self):
         at = add_task_through_ui(add_pet_through_ui(launch()))
         before = len(plan_table(at))
-        at.checkbox("done_0").set_value(True).run()
+        at.button(key="done_0").click().run()
         assert len(plan_table(at)) < before
+
+    def test_completing_a_daily_task_queues_tomorrows(self):
+        # The UI must go through Scheduler.complete_task(), not
+        # Task.mark_complete(), or recurring tasks silently never come back.
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        at.button(key="done_0").click().run()
+        tasks = Scheduler(owner_of(at)).all_tasks()
+        assert len(tasks) == 2
+        assert tasks[1].completed is False
+        assert tasks[1].starts_on is not None
+
+    def test_the_repeat_is_not_due_on_the_day_it_was_completed(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        day = at.date_input("plan_day").value
+        at.button(key="done_0").click().run()
+        assert Scheduler(owner_of(at)).tasks_due_on(day) == []
+
+    def test_a_completed_task_shows_as_done(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        at.button(key="done_0").click().run()
+        at.selectbox("filter_status").set_value("Completed").run()
+        assert any(c.value == "done" for c in at.caption)
+
+
+class TestFilterAndSortControls:
+    def test_the_controls_appear_once_there_is_a_task(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        keys = [s.key for s in at.selectbox]
+        assert {"filter_pet", "filter_status", "sort_by"} <= set(keys)
+
+    def test_filtering_to_completed_hides_outstanding_tasks(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        at.selectbox("filter_status").set_value("Completed").run()
+        assert any("Nothing matches" in c.value for c in at.caption)
+
+    def test_filtering_by_pet_hides_the_other_pets_tasks(self):
+        at = add_pet_through_ui(launch(), "Mochi", "cat")
+        at = add_pet_through_ui(at, "Biscuit", "dog")
+        at.selectbox("task_pet").set_value("Mochi (cat)")
+        at.text_input("task_title").set_value("Litter box")
+        at.button[1].click().run()
+
+        at.selectbox("filter_pet").set_value("Biscuit (dog)").run()
+        assert any("Nothing matches" in c.value for c in at.caption)
+
+    def test_sorting_by_priority_is_accepted(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        at.selectbox("sort_by").set_value("Priority").run()
+        assert not at.exception
+
+    def test_sorting_by_pet_is_accepted(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        at.selectbox("sort_by").set_value("Pet").run()
+        assert not at.exception
+
+
+class TestConflictWarnings:
+    def test_a_clear_day_reports_success(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        assert any("No clashing" in s.value for s in at.success)
+
+    def test_clashing_pinned_tasks_raise_a_warning(self):
+        at = add_pet_through_ui(launch())
+        for title in ["Insulin", "Eye drops"]:
+            at.text_input("task_title").set_value(title)
+            at.checkbox("task_pinned").set_value(True)
+            at.time_input("task_time").set_value(time(9, 0))
+            at.button[1].click().run()
+
+        assert any("clash" in w.value.lower() for w in at.warning)
+
+    def test_the_warning_names_both_clashing_tasks(self):
+        at = add_pet_through_ui(launch())
+        for title in ["Insulin", "Eye drops"]:
+            at.text_input("task_title").set_value(title)
+            at.checkbox("task_pinned").set_value(True)
+            at.time_input("task_time").set_value(time(9, 0))
+            at.button[1].click().run()
+
+        markdown = " ".join(m.value for m in at.markdown)
+        assert "Insulin" in markdown and "Eye drops" in markdown
+
+    def test_no_conflict_banner_before_any_tasks_exist(self):
+        at = add_pet_through_ui(launch())
+        assert not any("clashing" in s.value for s in at.success)
 
 
 # --- the plan renders -------------------------------------------------------
@@ -216,12 +294,35 @@ class TestPlanRendering:
         at = add_task_through_ui(add_pet_through_ui(launch()))
         assert plan_table(at)
 
-    def test_the_summary_caption_reports_the_minutes_used(self):
+    def test_the_summary_reports_the_minutes_used(self):
         at = add_task_through_ui(
             add_pet_through_ui(launch()), "Morning walk", 30
         )
-        captions = " ".join(c.value for c in at.caption)
-        assert "30" in captions
+        summaries = " ".join(s.value for s in at.success)
+        assert "30" in summaries
+
+    def test_a_day_where_everything_fits_reports_success(self):
+        at = add_task_through_ui(add_pet_through_ui(launch()))
+        assert any("Everything fits" in s.value for s in at.success)
+
+    def test_a_day_with_a_task_left_out_warns_instead(self):
+        # A mix: one task that fits and one that does not. A day where
+        # nothing fits takes the separate "nothing could be scheduled"
+        # branch instead.
+        at = add_pet_through_ui(launch())
+        at.time_input("owner_start").set_value(time(8, 0))
+        at.time_input("owner_end").set_value(time(8, 30)).run()
+        at = add_task_through_ui(at, "Short walk", 30, "high")
+        at = add_task_through_ui(at, "Long groom", 60, "low")
+        assert any("did not fit" in w.value for w in at.warning)
+
+    def test_a_day_where_nothing_fits_says_so(self):
+        at = add_pet_through_ui(launch())
+        at.time_input("owner_start").set_value(time(8, 0))
+        at.time_input("owner_end").set_value(time(8, 20)).run()
+        at = add_task_through_ui(at, "Long groom", 60)
+        assert any("Nothing could be scheduled" in w.value
+                   for w in at.warning)
 
     def test_the_explanation_is_rendered(self):
         at = add_task_through_ui(add_pet_through_ui(launch()))

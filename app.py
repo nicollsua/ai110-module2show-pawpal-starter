@@ -195,6 +195,45 @@ def task_rows(owner: Owner) -> list[dict]:
     ]
 
 
+ALL_PETS = "All pets"
+SORT_CHOICES = ["Time", "Priority", "Pet"]
+STATUS_CHOICES = ["Outstanding", "Completed", "All"]
+
+
+def visible_tasks(
+    owner: Owner,
+    pet_choice: str = ALL_PETS,
+    status_choice: str = "Outstanding",
+    sort_choice: str = "Time",
+) -> list[Task]:
+    """Apply the task list's filter and sort controls.
+
+    Pure function over the Scheduler's own filtering and sorting methods, so
+    the UI never reimplements any of that logic. Takes the control values as
+    plain strings because that is what Streamlit's selectboxes hand back.
+    """
+    scheduler = Scheduler(owner)
+
+    if status_choice == "Outstanding":
+        tasks = scheduler.filter_by_status(False)
+    elif status_choice == "Completed":
+        tasks = scheduler.filter_by_status(True)
+    else:
+        tasks = scheduler.all_tasks()
+
+    if pet_choice != ALL_PETS:
+        wanted = find_pet(owner, pet_choice)
+        tasks = [t for t in tasks if wanted is not None and t.pet is wanted]
+
+    if sort_choice == "Priority":
+        return scheduler.sort_by_priority(tasks)
+    if sort_choice == "Pet":
+        return sorted(
+            tasks, key=lambda t: (t.pet.name if t.pet else "", t.title)
+        )
+    return scheduler.sort_by_time(tasks)
+
+
 def describe_frequency(task: Task) -> str:
     """Describe a task's recurrence in words, e.g. "weekly (Monday)"."""
     if task.frequency is Frequency.WEEKLY:
@@ -328,28 +367,89 @@ def render_add_task(owner: Owner) -> None:
                 st.rerun()
 
 
-def render_task_list(owner: Owner) -> None:
-    """Draw every task with a tick box wired to Task.mark_complete()."""
-    tasks = Scheduler(owner).all_tasks()
-    if not tasks:
+def render_task_list(owner: Owner, day: date) -> None:
+    """Draw the filterable, sortable task list with a Done button each.
+
+    Completion goes through Scheduler.complete_task() rather than
+    Task.mark_complete(), which is what makes a daily or weekly task come
+    back for its next occurrence. A button rather than a tick box, because
+    completing now has a consequence -- it queues the repeat -- and a tick
+    box implies you can simply untick it.
+    """
+    scheduler = Scheduler(owner)
+    if not scheduler.all_tasks():
         return
 
-    st.caption("Tick a task off and it drops out of the plan, freeing time.")
-    for index, task in enumerate(tasks):
-        done = st.checkbox(
-            f"{task.title} - {task.pet.name if task.pet else '?'} "
-            f"({task.duration_minutes} min, {task.priority.value})",
-            value=task.completed,
-            key=f"done_{index}",
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        pet_choice = st.selectbox(
+            "Show", [ALL_PETS] + pet_labels(owner), key="filter_pet"
         )
-        if done and not task.completed:
-            task.mark_complete()
-        elif not done and task.completed:
-            task.mark_incomplete()
+    with col2:
+        status_choice = st.selectbox(
+            "Status", STATUS_CHOICES, key="filter_status"
+        )
+    with col3:
+        sort_choice = st.selectbox("Sort by", SORT_CHOICES, key="sort_by")
+
+    tasks = visible_tasks(owner, pet_choice, status_choice, sort_choice)
+
+    if not tasks:
+        st.caption("Nothing matches those filters.")
+        return
+
+    for index, task in enumerate(tasks):
+        row, action = st.columns([5, 1])
+        with row:
+            st.markdown(
+                f"**{task.title}** &nbsp; {task.pet.name if task.pet else '?'}"
+                f" &nbsp;·&nbsp; {task.duration_minutes} min"
+                f" &nbsp;·&nbsp; {task.priority.value}"
+                f" &nbsp;·&nbsp; {describe_frequency(task)}"
+                f" &nbsp;·&nbsp; "
+                f"{f'{task.fixed_time:%H:%M}' if task.is_pinned() else 'flexible'}"
+            )
+        with action:
+            if task.completed:
+                st.caption("done")
+            elif st.button("Done", key=f"done_{index}", width="stretch"):
+                repeat = scheduler.complete_task(task, day)
+                if repeat is None:
+                    st.toast(f"{task.title} done.")
+                else:
+                    st.toast(
+                        f"{task.title} done - next one "
+                        f"{repeat.starts_on:%a %d %b}."
+                    )
+                st.rerun()
 
     with st.expander("All tasks as a table"):
-        st.dataframe(task_rows(owner), width="stretch",
-                     hide_index=True)
+        st.dataframe(task_rows(owner), width="stretch", hide_index=True)
+
+
+def render_conflicts(owner: Owner, day: date) -> None:
+    """Warn about clashing fixed times before showing the plan.
+
+    Shown above the plan rather than inside it, because a clash is something
+    the owner has to resolve themselves -- the scheduler can only drop one of
+    the two. Each warning names both tasks and both pets so it is actionable
+    without having to go hunting.
+    """
+    scheduler = Scheduler(owner)
+    if not scheduler.tasks_due_on(day):
+        return
+
+    conflicts = scheduler.find_conflicts(day)
+    if not conflicts:
+        st.success("No clashing appointments today.")
+        return
+
+    st.warning(
+        f"{len(conflicts)} clash(es). Only the earlier task of each pair "
+        f"gets scheduled, so move one of them if both matter."
+    )
+    for warning in conflicts:
+        st.markdown(f"- {warning}")
 
 
 def render_schedule(owner: Owner, day: date) -> None:
@@ -367,10 +467,14 @@ def render_schedule(owner: Owner, day: date) -> None:
                      hide_index=True)
         used = schedule.total_minutes()
         available = owner.available_minutes()
-        st.caption(
+        summary = (
             f"{len(schedule.scheduled)} task(s), using {used} of "
             f"{available} minutes ({available - used} spare)."
         )
+        if schedule.skipped:
+            st.warning(f"{summary} {len(schedule.skipped)} did not fit.")
+        else:
+            st.success(f"Everything fits. {summary}")
     else:
         st.warning("Nothing could be scheduled for this day.")
 
@@ -397,8 +501,9 @@ def main() -> None:
     render_add_pet(owner)
     st.divider()
     render_add_task(owner)
-    render_task_list(owner)
+    render_task_list(owner, day)
     st.divider()
+    render_conflicts(owner, day)
     render_schedule(owner, day)
 
 

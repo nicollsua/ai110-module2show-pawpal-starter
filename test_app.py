@@ -12,6 +12,7 @@ from datetime import date, time
 import pytest
 
 from app import (
+    ALL_PETS,
     SPECIES_OPTIONS,
     WEEKDAY_NAMES,
     add_pet,
@@ -24,6 +25,7 @@ from app import (
     skipped_rows,
     task_rows,
     update_owner_settings,
+    visible_tasks,
 )
 from pawpal_system import Frequency, Owner, Pet, Priority, Scheduler, Task
 
@@ -410,6 +412,89 @@ class TestTaskRows:
         task = add_task(owner.pets[0], "Walk", 30, Priority.HIGH)
         task.mark_complete()
         assert len(task_rows(owner)) == 1
+
+
+# --- visible_tasks (the filter and sort controls) ---------------------------
+
+
+class TestVisibleTasks:
+    @pytest.fixture
+    def stocked(self):
+        """An owner with two pets, four tasks, one of them completed."""
+        o = Owner("Jordan", day_start=time(8, 0), day_end=time(20, 0))
+        cat = add_pet(o, "Mochi", "cat")
+        dog = add_pet(o, "Biscuit", "dog")
+        add_task(cat, "Litter box", 10, Priority.MEDIUM)
+        add_task(cat, "Insulin", 5, Priority.HIGH, fixed_time=time(7, 30))
+        add_task(dog, "Walk", 30, Priority.HIGH)
+        done = add_task(dog, "Breakfast", 10, Priority.LOW,
+                        fixed_time=time(8, 0))
+        done.mark_complete()
+        return o
+
+    def test_defaults_to_outstanding_only(self, stocked):
+        titles = [t.title for t in visible_tasks(stocked)]
+        assert "Breakfast" not in titles
+        assert len(titles) == 3
+
+    def test_completed_filter_shows_only_completed(self, stocked):
+        titles = [t.title for t in visible_tasks(stocked,
+                                                 status_choice="Completed")]
+        assert titles == ["Breakfast"]
+
+    def test_all_status_shows_everything(self, stocked):
+        assert len(visible_tasks(stocked, status_choice="All")) == 4
+
+    def test_status_filters_partition_the_whole_list(self, stocked):
+        outstanding = visible_tasks(stocked, status_choice="Outstanding")
+        completed = visible_tasks(stocked, status_choice="Completed")
+        every = visible_tasks(stocked, status_choice="All")
+        assert len(outstanding) + len(completed) == len(every)
+
+    def test_filtering_by_pet_narrows_the_list(self, stocked):
+        titles = [t.title for t in visible_tasks(stocked, "Mochi (cat)",
+                                                 status_choice="All")]
+        assert sorted(titles) == ["Insulin", "Litter box"]
+
+    def test_all_pets_is_the_default(self, stocked):
+        assert len(visible_tasks(stocked, ALL_PETS, "All")) == 4
+
+    def test_an_unknown_pet_label_shows_nothing(self, stocked):
+        assert visible_tasks(stocked, "Nobody (dog)", "All") == []
+
+    def test_pet_and_status_filters_combine(self, stocked):
+        titles = [t.title for t in visible_tasks(stocked, "Biscuit (dog)",
+                                                 "Outstanding")]
+        assert titles == ["Walk"]
+
+    def test_sort_by_time_puts_pinned_first(self, stocked):
+        titles = [t.title for t in visible_tasks(stocked, ALL_PETS, "All",
+                                                 "Time")]
+        assert titles[:2] == ["Insulin", "Breakfast"]
+
+    def test_sort_by_priority_puts_urgent_first(self, stocked):
+        tasks = visible_tasks(stocked, ALL_PETS, "All", "Priority")
+        assert tasks[0].priority is Priority.HIGH
+        assert tasks[-1].priority is Priority.LOW
+
+    def test_sort_by_pet_groups_by_pet_name(self, stocked):
+        names = [t.pet.name for t in visible_tasks(stocked, ALL_PETS, "All",
+                                                   "Pet")]
+        assert names == sorted(names)
+
+    def test_an_unknown_sort_choice_falls_back_to_time(self, stocked):
+        assert [t.title for t in visible_tasks(stocked, ALL_PETS, "All",
+                                               "Nonsense")] == [
+            t.title for t in visible_tasks(stocked, ALL_PETS, "All", "Time")
+        ]
+
+    def test_no_tasks_gives_an_empty_list(self):
+        assert visible_tasks(Owner("Jordan")) == []
+
+    def test_filtering_does_not_mutate_the_pets_lists(self, stocked):
+        before = [[t.title for t in p.tasks] for p in stocked.pets]
+        visible_tasks(stocked, "Mochi (cat)", "All", "Priority")
+        assert [[t.title for t in p.tasks] for p in stocked.pets] == before
 
 
 # --- end to end through the UI helpers --------------------------------------

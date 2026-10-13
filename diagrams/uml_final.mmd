@@ -1,0 +1,134 @@
+classDiagram
+    %% PawPal+ - final architecture, matching pawpal_system.py
+    %%
+    %% Reading order: Owner sets the time window and owns Pets. Each Pet owns
+    %% its Tasks. Scheduler is the brain that reads tasks through the Owner,
+    %% sorts, filters and checks them, and produces a Schedule for one day.
+    %% A Schedule holds ScheduledTask and SkippedTask wrappers, each of which
+    %% carries the reason it was placed or left out.
+
+    class Priority {
+        <<enumeration>>
+        HIGH
+        MEDIUM
+        LOW
+        +rank() int
+    }
+
+    class Frequency {
+        <<enumeration>>
+        DAILY
+        WEEKLY
+        ONCE
+    }
+
+    class TimeHelpers {
+        <<module functions>>
+        +to_minutes(t time) int
+        +to_time(minutes int) time
+    }
+
+    class Owner {
+        +str name
+        +time day_start
+        +time day_end
+        +list~Pet~ pets
+        +add_pet(pet Pet) None
+        +available_minutes() int
+        +all_tasks() list~Task~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +list~Task~ tasks
+        +add_task(task Task) None
+        +label() str
+    }
+
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +Frequency frequency
+        +int weekday
+        +date due_date
+        +date starts_on
+        +time fixed_time
+        +bool completed
+        +Pet pet
+        +mark_complete() None
+        +mark_incomplete() None
+        +is_pinned() bool
+        +is_due_on(day date) bool
+        +next_occurrence_date(on date) date
+        +next_occurrence(on date) Task
+    }
+
+    class ScheduledTask {
+        +Task task
+        +time start_time
+        +time end_time
+        +str reason
+        +describe() str
+    }
+
+    class SkippedTask {
+        +Task task
+        +str reason
+        +describe() str
+    }
+
+    class Schedule {
+        +Owner owner
+        +date day
+        +list~ScheduledTask~ scheduled
+        +list~SkippedTask~ skipped
+        +generate() None
+        +explain() str
+        +total_minutes() int
+    }
+
+    class Scheduler {
+        +Owner owner
+        +all_tasks() list~Task~
+        +pending_tasks() list~Task~
+        +completed_tasks() list~Task~
+        +tasks_due_on(day date) list~Task~
+        +tasks_for_pet(pet Pet) list~Task~
+        +sort_by_time(tasks list) list~Task~
+        +sort_by_priority(tasks list) list~Task~
+        +filter_by_status(completed bool) list~Task~
+        +filter_by_pet(pet_name str) list~Task~
+        +filter_by_priority(priority Priority) list~Task~
+        +complete_task(task Task, on date) Task
+        +find_conflicts(day date) list~str~
+        +has_conflicts(day date) bool
+        +plan_for(day date) Schedule
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : has, sets back-reference
+    Task "1" --> "0..1" Pet : belongs to
+    Task --> Priority : uses
+    Task --> Frequency : uses
+    Task ..> Task : next_occurrence() creates
+
+    Scheduler "1" --> "1" Owner : reads tasks via all_tasks()
+    Scheduler ..> Schedule : produces
+    Scheduler ..> Task : sorts, filters, completes
+
+    Schedule "1" --> "1" Owner : plans within their day
+    Schedule "1" --> "*" ScheduledTask : placed
+    Schedule "1" --> "*" SkippedTask : left out
+    ScheduledTask "1" --> "1" Task : wraps with a time
+    SkippedTask "1" --> "1" Task : wraps with a reason
+
+    Schedule ..> TimeHelpers : converts clock times
+    Scheduler ..> TimeHelpers : converts clock times
+
+    note for Scheduler "The brain. Never touches pet.tasks directly -- it\ngoes through Owner.all_tasks(), so Owner stays in\ncharge of its own pets."
+    note for Task "starts_on gates a repeat created by\nnext_occurrence(), so tomorrow's copy of a daily\ntask is not also due today."
+    note for ScheduledTask "Separate from Task on purpose. A Task is always\ntrue; where it landed today is a different fact.\nRegenerating a plan never mutates the task list."

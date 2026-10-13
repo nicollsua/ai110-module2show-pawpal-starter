@@ -22,6 +22,46 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## ✨ Features
+
+**Scheduling**
+
+- **Time-window planning** — the owner sets when their day starts and ends, and nothing is ever planned outside it
+- **Pinned vs. flexible tasks** — a task can be fixed to a time (meds at 8am) or left for the scheduler to place
+- **Gap filling** — free gaps between pinned tasks are computed, then flexible tasks take the earliest gap they fit in
+- **Priority ordering** — high before medium before low, and on a tie the shorter task first, which fits more into the day
+- **Nothing disappears silently** — a task that cannot fit is listed separately with the reason, including how long it needed and how much was actually free
+
+**Sorting** — `Scheduler.sort_by_time()`, `sort_by_priority()`
+
+- Pinned tasks in clock order, flexible ones last, ties broken by title so the output is stable
+- Sorts a copy, so a pet's own task list keeps its entry order
+
+**Filtering** — `Scheduler.filter_by_pet()`, `filter_by_status()`, `filter_by_priority()`
+
+- By pet, by done/outstanding, or by priority level
+- Pet names match case-insensitively and an unknown name returns nothing rather than raising
+
+**Recurring tasks** — `Task.next_occurrence()`, `Scheduler.complete_task()`
+
+- Daily, weekly (on a chosen weekday), or a one-off on a specific date
+- Completing a recurring task automatically queues the next occurrence: daily rolls to tomorrow, weekly to the next matching weekday
+- The new copy is not due until its date, so tomorrow's feeding does not appear in today's plan
+- The completed task is kept, so each pet's list doubles as a record of what was done
+
+**Conflict detection** — `Scheduler.find_conflicts()`
+
+- Flags any two fixed-time tasks that overlap, with a plain-English warning naming both tasks and both pets
+- Warns rather than raising — a clash never stops the app
+- Tasks that touch exactly (08:00–09:00 then 09:00–) are back to back, not a conflict
+- Conflicts across different pets still count: two pets, one owner, one pair of hands
+
+**Explanation**
+
+- Every scheduled task carries the reason it landed where it did
+- Every skipped task carries why it was left out
+- `Schedule.explain()` renders the whole thing as readable text
+
 ## Getting started
 
 ### Setup
@@ -292,12 +332,179 @@ deleted, so a pet's task list doubles as a record of what was done.
 
 ## 📸 Demo Walkthrough
 
-Describe your app in numbered steps so a reader can follow along without watching a video:
+Start the app with:
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+```bash
+streamlit run app.py
+```
+
+### The interface
+
+**Sidebar — your day.** Your name, the time your day starts, and the time it
+ends. That window is the constraint everything else works against, and the
+caption underneath tells you how many minutes you have. Below it, a date
+picker for which day you are planning, with the weekday named underneath
+(which matters for weekly tasks). Set the end before the start and it tells
+you so rather than producing a nonsensical plan.
+
+**Pets.** A form for name, species, breed and age. Added pets appear as chips
+underneath, and each one becomes selectable in the task form.
+
+**Tasks.** Appears once you have at least one pet. Pick the pet, give the task
+a title, a duration and a priority, and choose whether it repeats daily,
+weekly or once. Tick *"This has to happen at a specific time"* and set a time
+to pin it; leave it unticked and the scheduler decides when.
+
+**Your task list.** Three controls across the top — filter by pet, filter by
+status (outstanding / completed / all), and sort by time, priority or pet.
+Each row shows the task's duration, priority, recurrence and whether it is
+pinned or flexible, with a **Done** button on the right.
+
+**Conflicts.** Above the plan, either a green *"No clashing appointments
+today"* or an amber warning listing each clashing pair by name.
+
+**Today's plan.** A table of what happens when, each row carrying the reason
+it was placed there. Underneath, either a green *"Everything fits"* or an
+amber warning saying how many did not. Anything left out gets its own table
+with the reason. An expander holds the full written explanation.
+
+### An example workflow
+
+1. **Set your day.** In the sidebar, set it to run 07:30 to 10:00 — a tight
+   morning. The caption reads *150 minutes available*.
+2. **Add two pets.** Mochi, a cat. Biscuit, a dog. Both appear as chips and
+   both become options in the task form.
+3. **Add a pinned task.** Mochi's insulin shot, 5 minutes, high priority,
+   ticked as needing a specific time: 07:30. It must happen exactly then.
+4. **Add flexible tasks.** Biscuit's morning walk (30 min, high), Mochi's
+   litter box (10 min, medium), Biscuit's nail trim (25 min, low). No times —
+   the scheduler decides.
+5. **Add a recurring task.** Biscuit's coat brushing, 20 minutes, set to
+   repeat *weekly* on Monday. It only appears on Mondays.
+6. **Create a clash on purpose.** Add Biscuit's breakfast pinned to 08:00
+   (10 min) and Mochi's eye drops pinned to 08:05 (15 min). They overlap.
+7. **Read the warning.** An amber box appears above the plan:
+   *"Biscuit and Mochi overlap: Breakfast runs 08:00-08:10 but Eye drops
+   starts 08:05."* The app keeps working — it schedules the earlier task and
+   lists the other as left out.
+8. **Read the plan.** Insulin at 07:30 because it is pinned. Litter box at
+   07:35 — a medium task landing before a high one, because the walk needs 30
+   minutes and only 25 were free before breakfast. Breakfast at 08:00, pinned.
+   Then the walk, then the brushing.
+9. **Tick something off.** Press **Done** on a task. A toast confirms it, and
+   for a daily or weekly task it tells you when the next one is due. The plan
+   rebuilds, and time freed up may let a previously skipped task fit.
+10. **Change the day.** Move the date picker to Tuesday. The weekly brushing
+    disappears; the daily tasks remain.
+
+### Scheduler behaviors you can see in that run
+
+| Behavior | Where it shows up |
+|---|---|
+| **Sorting** | Change *Sort by* to Priority and the list reorders; the plan itself always runs in clock order |
+| **Filtering** | Set *Show* to one pet, or *Status* to Completed |
+| **Gap filling** | Litter box at 07:35 beating Morning walk, because the walk did not fit the 25-minute gap |
+| **Conflict warning** | The amber box naming Breakfast and Eye drops |
+| **Recurrence** | Pressing Done on a daily task; the toast names tomorrow's date |
+| **Skipping with a reason** | *"needs 25 min but the largest free gap left is 15 min"* |
+| **Explanation** | The *Why this plan?* expander below the table |
+
+### Sample CLI output
+
+The same logic, driven from the terminal with `python main.py`. This is the
+full output of the demo script, which walks through sorting, filtering,
+conflict detection, the plan, and a recurring task regenerating itself.
+
+```
+==============================================================
+  PawPal+ - Today's Schedule
+==============================================================
+  Owner : Jordan
+  Pets  : Mochi (cat), Biscuit (dog)
+  Day   : Monday, October 12, 2026  (07:30-10:00, 150 min)
+
+
+==============================================================
+  SORTING - Scheduler.sort_by_time()
+==============================================================
+  As entered:
+     flexible  Vet checkup
+        07:30  Insulin shot
+     flexible  Litter box
+        08:05  Eye drops
+     flexible  Nail trim
+        08:00  Breakfast
+     flexible  Morning walk
+     flexible  Brush coat
+
+  Sorted by time (pinned first, flexible last):
+        07:30  Insulin shot
+        08:00  Breakfast
+        08:05  Eye drops
+     flexible  Brush coat
+     flexible  Litter box
+     flexible  Morning walk
+     flexible  Nail trim
+     flexible  Vet checkup
+
+==============================================================
+  FILTERING - by pet, and by status
+==============================================================
+  Mochi (cat)            4 task(s)
+          07:30  Insulin shot
+          08:05  Eye drops
+       flexible  Litter box
+       flexible  Vet checkup
+  Biscuit (dog)          4 task(s)
+          08:00  Breakfast
+       flexible  Brush coat
+       flexible  Morning walk
+       flexible  Nail trim
+
+  Outstanding : 8
+  Completed   : 0
+
+==============================================================
+  CONFLICTS - Scheduler.find_conflicts()
+==============================================================
+  1 clash(es) found. The app keeps running:
+    ! Biscuit and Mochi overlap: Breakfast runs 08:00-08:10 but Eye drops starts 08:05
+
+==============================================================
+  THE PLAN - Scheduler.plan_for()
+==============================================================
+--------------------------------------------------------------
+  TIME          TASK             PET       WHY
+--------------------------------------------------------------
+  07:30-07:35   Insulin shot     Mochi     pinned to 07:30
+  07:35-07:45   Litter box       Mochi     medium priority, earliest free 10 min slot
+  08:00-08:10   Breakfast        Biscuit   pinned to 08:00
+  08:10-08:40   Morning walk     Biscuit   high priority, earliest free 30 min slot
+  08:40-09:40   Vet checkup      Mochi     high priority, earliest free 60 min slot
+  09:40-10:00   Brush coat       Biscuit   low priority, earliest free 20 min slot
+--------------------------------------------------------------
+
+  NOT SCHEDULED
+    - Eye drops (15 min) - fixed time 08:05 overlaps Breakfast
+    - Nail trim (25 min) - needs 25 min but the largest free gap left is 15 min
+
+  6 task(s) scheduled, 2 left out.
+  Using 135 of 150 minutes (15 min spare).
+==============================================================
+
+==============================================================
+  RECURRING - completing a task queues the next one
+==============================================================
+  Added 'Evening feed' (daily).
+  Outstanding copies today: 1
+
+  Marked complete on Mon 12 Oct.
+  A repeat was created, starting Tue 13 Oct.
+
+  The completed original drops out and the repeat has not
+  started yet, so today is clear -- but tomorrow is covered:
+    outstanding today    : 0
+    outstanding tomorrow : 1
+```
 
 **Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->

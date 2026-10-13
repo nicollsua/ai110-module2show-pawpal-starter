@@ -102,10 +102,42 @@ One limitation I should be honest about: conflict detection only looks at *pinne
 - How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
 - What kinds of prompts or questions were most helpful?
 
+I used Claude Code in VS Code for basically the whole build. The parts that actually earned their keep:
+
+**Agent mode with terminal access.** This was the big one. The assistant could run `pytest` and `python main.py` itself and read the real output, instead of guessing whether something worked. When I asked it to verify my Streamlit app, it found Streamlit's own `AppTest` harness and drove the actual UI — clicking buttons, filling forms — rather than just eyeballing the code. That's how we caught a bug I'd never have found by reading.
+
+**Design conversation before any code.** Before writing a line of `pawpal_system.py` I had it ask me four questions: pinned times or not, one pet or many, recurring tasks in scope, and what the owner's constraint actually is. Those four answers determined every attribute in my UML. Doing that first meant the class design came out of decisions instead of guesses.
+
+**Reviewing my own skeleton.** Attaching `pawpal_system.py` and asking "what's missing here" found five real problems before I'd implemented anything — including that `datetime.time` can't do arithmetic at all, which would have made a mess of basically every method.
+
+The prompts that worked best were the ones that asked for problems rather than code. "What's wrong with this" got me much further than "write this for me." The worst prompts were vague ones like "make it better" — those produced changes I then had to evaluate from scratch.
+
 **b. Judgment and verification**
 
 - Describe one moment where you did not accept an AI suggestion as-is.
 - How did you evaluate or verify what the AI suggested?
+
+The clearest one is sorting. Phase 3 told me to sort my task times as `"HH:MM"` strings using a lambda key. I asked about it, and the answer was that doing it that way would be a real bug, not just an awkward style choice: string comparison goes character by character, so `"9:00"` sorts *after* `"10:00"` because `"9" > "1"`. It only appears to work if everything is zero-padded. My tasks store `datetime.time` objects, which compare properly, so I kept those and used the lambda for a different job — pushing flexible tasks to the end of the list. I wrote a test (`test_single_digit_hours_sort_before_double_digit`) specifically to pin that down.
+
+I also turned down a suggestion that was genuinely more Pythonic. I'd asked how to simplify `find_conflicts()`, and got two options. The first replaced a hand-written nested loop with `itertools.combinations(pinned, 2)` — shorter *and* clearer, since it says "every pair" in actual words, so I took it. The second was a sweep-line algorithm to get conflict detection from O(n²) to O(n log n). I said no. With under fifty tasks the speedup is something I would never notice, and the pairwise version is one I can read and be confident is correct. Faster in a way nobody can perceive, harder to read in a way I definitely would.
+
+How I verified things, in rough order of how much I trust them:
+
+1. **Run it.** The time-arithmetic claim sounded wrong to me, so I had it actually execute `time(8,0) + timedelta(minutes=30)` and show me the `TypeError`. Then I believed it.
+2. **Break it on purpose.** After my tests all passed first time, I was suspicious that they weren't testing anything. So I deliberately introduced four bugs into `pawpal_system.py` — weekly repeats landing the same day, touching tasks counting as overlaps, flexible tasks losing their sort position, repeats being due immediately — and ran the suite each time. All four were caught. A suite that passes proves nothing by itself.
+3. **Read the output and ask if it's sensible.** The terminal output in the README is the real check. No assertion tells me whether that's a morning a person would actually follow.
+
+The one I'd flag to anyone doing this next: the assistant wrote both my implementation and my tests, so they agree with each other by construction. If I'd misunderstood the *problem*, that misunderstanding would be sitting in both and the tests would cheerfully confirm it.
+
+**c. Separate chat sessions**
+
+The instructions said to open a new chat session for each phase. **I didn't do that — I ran the whole project in one continuous session.** Being honest about it because the tradeoff is real and went both ways.
+
+What I gained: the assistant remembered every decision. When I added recurring tasks in Phase 3, it already knew why `Task` had `duration_minutes` and `fixed_time` as separate fields, and it caught that the naive "today + 1 day" approach would collide with my existing daily-task model — because it remembered that model. A fresh session would have had to re-derive that, or gotten it wrong.
+
+What it cost: no clean separation between planning and implementing. A couple of times I was mid-implementation and wanted to think about design instead, and the conversation was already deep in test output. A separate session would have forced that reset.
+
+If I did it again I'd split differently than the instructions suggest — not one session per phase, but one for "decide what to build" and one for "build it," since those are the two modes that actually conflict.
 
 ---
 
@@ -155,10 +187,32 @@ If I had more time, in order:
 
 - What part of this project are you most satisfied with?
 
+The explanations. Every scheduled task carries a sentence saying why it landed where it did, and every skipped one says exactly what it needed and what was actually free. That turned out to matter more than I expected, because the scheduler does things that look wrong at first glance. In my sample output a *medium* priority task is scheduled before a *high* priority one, and without the reason column I'd have assumed the sorting was broken. With it, you can see the walk needed 30 minutes and only 25 were free, so the shorter task backfilled the gap. The app can defend itself.
+
+I'm also pleased with how splitting `Task` from `ScheduledTask` worked out. It felt like extra ceremony when I added it. It stopped being ceremony the moment plans needed regenerating, because the task list never gets corrupted by yesterday's answer.
+
 **b. What you would improve**
 
 - If you had another iteration, what would you improve or redesign?
 
+**Completion should be per-day, not a boolean.** This is the thing I'd redo first. Right now `completed` is `True`/`False`, which means finishing a daily task required creating a whole new copy of it stamped with a start date. It works, and it's tested, but a pet's task list fills up with completed duplicates — seven days of feeding is seven objects. If `Task` stored `completed_on` as a set of dates instead, one daily task would just be one object that knows which days it's been done. Smaller, and it makes "show me last week" possible, which right now it isn't really.
+
+**The greedy packing.** It isn't optimal and I know exactly where it loses: it never reconsiders a placement. In my demo "Nail trim" gets skipped for want of 25 minutes when there were two separate 15-minute gaps that a smarter arrangement could have merged. I'd want to at least measure how often that costs a real task before deciding whether it's worth fixing.
+
+**Timezones.** I store wall-clock times with no date attached, so the day the clocks change, an hour either disappears or happens twice. Completely untested and I'd guess completely broken.
+
+**Editing tasks.** You can add and complete, but not edit. Getting a duration wrong means deleting and re-adding, and there isn't even a delete.
+
 **c. Key takeaway**
 
 - What is one important thing you learned about designing systems or working with AI on this project?
+
+That the useful thing I bring isn't writing code — it's deciding what's true about the problem.
+
+The clearest case was recurring tasks. The instructions said to calculate the next due date as "today + 1 day." That's correct arithmetic and completely wrong for my system, because in my model a daily task is *already* due every day — so creating a copy for tomorrow would have put two identical tasks in the same day's plan. The code would have run. The tests I'd have written for it would have passed. It would just have told the owner to feed the cat twice.
+
+Nothing about that is a coding problem. It's a question about what "daily" means in my model, and the only person who could answer it was me, because I'm the one who decided what `is_due_on()` returns. The assistant could write the fix in seconds once the question was settled — the `starts_on` field — but it couldn't settle it.
+
+That's what "lead architect" turned out to mean in practice. The AI is faster than me at everything except knowing which question is the real one. It will happily and competently build whatever I describe, including the wrong thing, and it'll be well-structured and tested and wrong. So the job is holding onto the model in my head and checking each suggestion against it — not reviewing the syntax, but asking "does this match what I decided this system is?"
+
+The habit I'll keep is making it prove things instead of asserting them. When it told me `datetime.time` can't do arithmetic, I had it run the code and show me the `TypeError` before I believed it. When my tests all passed first try, I had it deliberately break the source to check the tests could fail at all. Both times the claim held up. But I only know that because I checked, and checking cost about thirty seconds each time.
